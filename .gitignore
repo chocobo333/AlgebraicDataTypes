@@ -1,0 +1,9 @@
+
+.DS_Store
+.vscode
+
+# Binary files
+bin/
+
+# Nim's cache files
+nimcache/
