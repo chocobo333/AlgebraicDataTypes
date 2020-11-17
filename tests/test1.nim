@@ -2,5 +2,27 @@
 import unittest
 
 import algebraicdatas
-test "can add":
-    check add(5, 5) == 10
+
+
+Algebraic Color:
+    Rgb(int8, int8, int8)
+    Name(string)
+Algebraic Shape[T: SomeFloat]:
+    Square(T)
+    Rectangle(w: T, h: T)
+    x: T
+    y: T
+    color: Color
+Algebraic Option[T]:
+    Some(T)
+    None
+Algebraic Result[T, E]:
+    Ok(T)
+    Err(E)
+Algebraic Number:
+    nbits: int
+    Int(val: int)
+    Float(val: float)
+
+test "variant":
+    echo Option[int].None()
