@@ -25,4 +25,8 @@ Algebraic Number:
     Float(val: float)
 
 test "variant":
-    echo Option[int].None()
+    check declared(Color)
+    check declared(Shape)
+    check declared(Option)
+    check declared(Result)
+    check declared(Number)
