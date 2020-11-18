@@ -321,89 +321,90 @@ func scanTupleInfo(selector: NimNode): (NimNodeKind, int, seq[string]) =
         # TODO:
         raise newException(AdtError, "Unexpected Error")
 
+func mathcTupleConstr(selector: NimNode, pattern: NimNode, tupleLen: int): NimNode =
+    pattern.matchAst:
+    # (pat0, pat1)
+    of `p`@nnkPar:
+        # TODO: use exactly match now
+        #       support short pattern
+        p.expectLen(tupleLen)
+        result = toSeq(p.children).enumerate.mapIt(
+            infix(it[1], "?=", selector.newIndex(it[0]))
+        ).foldl(infix(a, "and", b))
+    of nnkIdent(strVal = "_"):
+        result = newBoolLitNode(true)
+    # capturing or comparing to an existing variable
+    # name
+    of `p`@nnkIdent:
+        result = infix(p, bindSym":==", selector)
+    # captruing, never comparing to an existing variable
+    # name@_
+    of nnkInfix(ident"@", `id`@nnkIdent, nnkIdent(strVal = "_")):
+        result = infix(id, bindSym":=", selector)
+    # mathing and capturing
+    # name@pat
+    of nnkInfix(ident"@", `id`@nnkIdent, `p`@_):
+        result = infix(selector.mathcTupleConstr(p, tupleLen), "and", infix(id, bindSym":=", selector))
+    else:
+        error "invalid pattern", pattern
+
+func matchTupleField(selector: NimNode, pattern: NimNode, tupleFields: seq[string], usedFields: var seq[string]): NimNode =
+    pattern.matchAst:
+    of nnkExprColonExpr(`field`@nnkIdent, `p`@_):
+        if field.strVal notin tupleFields:
+            error "undeclared field: " & field.strVal, field
+        if field.strVal in usedFields:
+            error "this field has alread appeared in patten: " & field.strVal, field
+        # if (p.kind == nnkIdent and p.strVal == field.strVal):
+        p.matchAst:
+        of nnkIdent(strVal = field.strVal):
+            hint &"You can simply use the pattern `{p.strVal}` instead of `{p.strVal}: {p.strVal}` if you don't want to compare it with an existing variable", pattern
+        of nnkInfix(ident"@", `p`@nnkIdent(strVal = field.strVal), nnkIdent(strVal = "_")):
+            hint &"You can simply use the pattern `{p.strVal}` instead of `{p.strVal}: {p.strVal}@_` if you don't want to compare it with an existing variable", pattern
+        else:
+            discard
+        usedFields.add field.strVal
+        result = infix(p, "?=", newDotExpr(selector, field))
+    of `field`@nnkIdent:
+        if field.strVal notin tupleFields:
+            error(
+                tupleFields.filterIt(it notin usedFields).mapIt(
+                    &"You can use the pattern `{it}: subpattern` or `{it}`."
+                ).join("\n") & &"\nundeclared field: {field.strVal}",
+                field
+            )
+        if field.strVal in usedFields:
+            error "this field has alread appeared in patten: " & field.strVal, field
+        usedFields.add field.strVal
+        result = infix(field, bindSym":=", newDotExpr(selector, field))
+    else:
+        error "invalid pattern", pattern
+func matchTupleTy(selector: NimNode, pattern: NimNode, tupleFields: seq[string]): NimNode =
+    pattern.matchAst:
+    of `p`@nnkPar:
+        var usedFields: seq[string]
+        result = toSeq(p.children).mapIt(
+            selector.matchTupleField(it, tupleFields, usedFields)
+        ).foldl(infix(a, "and", b))
+    of nnkIdent(strVal = "_"):
+        result = newBoolLitNode(true)
+    # capturing or comparing to an existing variable
+    # name
+    of `p`@nnkIdent:
+        result = infix(p, bindSym":==", selector)
+    # captruing, never comparing to an existing variable
+    # name@_
+    of nnkInfix(ident"@", `id`@nnkIdent, nnkIdent(strVal = "_")):
+        result = infix(id, bindSym":=", selector)
+    # mathing and capturing
+    # name@pat
+    of nnkInfix(ident"@", `id`@nnkIdent, `p`@_):
+        result = infix(selector.matchTupleTy(p, tupleFields), "and", infix(id, bindSym":=", selector))
+    else:
+        error "invalid pattern", pattern
+
 macro `?=`*(pattern: untyped, selector: tuple): untyped =
     func impl(selector: NimNode, pattern: NimNode): NimNode =
-        func mathcTupleConstr(selector: NimNode, pattern: NimNode, tupleLen: int): NimNode =
-            pattern.matchAst:
-            # (pat0, pat1)
-            of `p`@nnkPar:
-                # TODO: use exactly match now
-                #       support short pattern
-                p.expectLen(tupleLen)
-                result = toSeq(p.children).enumerate.mapIt(
-                    infix(it[1], "?=", selector.newIndex(it[0]))
-                ).foldl(infix(a, "and", b))
-            of nnkIdent(strVal = "_"):
-                result = newBoolLitNode(true)
-            # capturing or comparing to an existing variable
-            # name
-            of `p`@nnkIdent:
-                result = infix(p, bindSym":==", selector)
-            # captruing, never comparing to an existing variable
-            # name@_
-            of nnkInfix(ident"@", `id`@nnkIdent, nnkIdent(strVal = "_")):
-                result = infix(id, bindSym":=", selector)
-            # mathing and capturing
-            # name@pat
-            of nnkInfix(ident"@", `id`@nnkIdent, `p`@_):
-                result = infix(selector.impl(p), "and", infix(id, bindSym":=", selector))
-            else:
-                error "invalid pattern", pattern
-        func matchTupleTy(selector: NimNode, pattern: NimNode, tupleFields: seq[string]): NimNode =
-            func matchTupleField(selector: NimNode, pattern: NimNode, tupleFields: seq[string], usedFields: var seq[string]): NimNode =
-                pattern.matchAst:
-                of nnkExprColonExpr(`field`@nnkIdent, `p`@_):
-                    if field.strVal notin tupleFields:
-                        error "undeclared field: " & field.strVal, field
-                    if field.strVal in usedFields:
-                        error "this field has alread appeared in patten: " & field.strVal, field
-                    # if (p.kind == nnkIdent and p.strVal == field.strVal):
-                    p.matchAst:
-                    of nnkIdent(strVal = field.strVal):
-                        hint &"You can simply use the pattern `{p.strVal}` instead of `{p.strVal}: {p.strVal}` if you don't want to compare it with an existing variable", pattern
-                    of nnkInfix(ident"@", `p`@nnkIdent(strVal = field.strVal), nnkIdent(strVal = "_")):
-                        hint &"You can simply use the pattern `{p.strVal}` instead of `{p.strVal}: {p.strVal}@_` if you don't want to compare it with an existing variable", pattern
-                    else:
-                        discard
-                    usedFields.add field.strVal
-                    result = infix(p, bindSym"?=", newDotExpr(selector, field))
-                of `field`@nnkIdent:
-                    if field.strVal notin tupleFields:
-                        error(
-                            tupleFields.filterIt(it notin usedFields).mapIt(
-                                &"You can use the pattern `{it}: subpattern` or `{it}`."
-                            ).join("\n") & &"\nundeclared field: {field.strVal}",
-                            field
-                        )
-                    if field.strVal in usedFields:
-                        error "this field has alread appeared in patten: " & field.strVal, field
-                    usedFields.add field.strVal
-                    result = infix(field, bindSym":=", newDotExpr(selector, field))
-                else:
-                    error "invalid pattern", pattern
-            pattern.matchAst:
-            of `p`@nnkPar:
-                var usedFields: seq[string]
-                result = toSeq(p.children).mapIt(
-                    selector.matchTupleField(it, tupleFields, usedFields)
-                ).foldl(infix(a, "and", b))
-            of nnkIdent(strVal = "_"):
-                result = newBoolLitNode(true)
-            # capturing or comparing to an existing variable
-            # name
-            of `p`@nnkIdent:
-                result = infix(p, bindSym":==", selector)
-            # captruing, never comparing to an existing variable
-            # name@_
-            of nnkInfix(ident"@", `id`@nnkIdent, nnkIdent(strVal = "_")):
-                result = infix(id, bindSym":=", selector)
-            # mathing and capturing
-            # name@pat
-            of nnkInfix(ident"@", `id`@nnkIdent, `p`@_):
-                result = infix(selector.impl(p), "and", infix(id, bindSym":=", selector))
-            else:
-                error "invalid pattern", pattern
-        
         let (tupleKind, tupleLen, tupleFields) = scanTupleInfo(selector)
         case tupleKind:
         # (val0, val1)
@@ -474,11 +475,26 @@ template otpOr*{false or a}(a: bool): bool = a
 template otpOr*{a or false}(a: bool): bool = a
 
 # TODO: smarter error infomation: tuple length check, wheter ofBranch is, wheter discard pattern is,  and so on
+# TODO:     detect whether `==` is declared and emit error
 # TODO: use bindSym instead making method public
 # TODO: smarter existing variable pattern such as `name ?= 3` (when the variable does not exist, the pattern is regarded as `name@_`)
 # TODO: try to add structures made by Algebraic pragma which is identical: can get pragma info from other macros via `getTypeImpl`
 #       such pragma seems be called costumPragma and there are helpers: `hasCustomPragm` and `getCustomPragmaVal` in macros
 # TODO: make else branch appear
 # TODO: turn proc into func
+# TODO: do not hint about comparisons with an existing variable if the variable is declared in a match statement
+#       detect using `declaredInScope`
+# TODO: In `makeConstructor`, distinguish between an ident for parameter and one for object constructor field
 
 {.experimental: "caseStmtMacros".}
+
+expandMacros:
+    Algebraic Color:
+        Rgb(int8, int8, int8)
+        Name(string)
+    Algebraic Shape[T: SomeFloat]:
+        Square(T)
+        Rectangle(w: T, h: T)
+        x: T
+        y: T
+        color: Color
