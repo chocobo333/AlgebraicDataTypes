@@ -68,11 +68,10 @@ func scanFields(body: NimNode): (seq[NimNode], seq[(NimNode, VariantKind, seq[Ni
     (fields, kinds)
 
 proc makeType(name: NimNode, generics: NimNode, fields: seq[NimNode], kinds: seq[(NimNode, VariantKind, seq[NimNode])]): NimNode =
-    name.expectKind(nnkIdent)
-    result = nnkTypeSection.newNimNode()
-    proc generalize(id: NimNode): NimNode =
+    func generalize(id: NimNode, generics: NimNode): NimNode =
         if generics.kind == nnkEmpty:
             return id
+        generics.expectKind(nnkGenericParams)
         # id, @[T1: SomeInteger, T2: SomeFloat] -> id[T1, T2]
         nnkBracketExpr.newTree(id).add(
             generics.mapIt(
@@ -81,6 +80,8 @@ proc makeType(name: NimNode, generics: NimNode, fields: seq[NimNode], kinds: seq
                     it[0]
             )
         )
+    name.expectKind(nnkIdent)
+    result = nnkTypeSection.newNimNode()
     let
         genericParams = generics.mapIt(it)
         kindId = ident(fmt"{name}kind")
@@ -125,7 +126,7 @@ proc makeType(name: NimNode, generics: NimNode, fields: seq[NimNode], kinds: seq
                                 else:
                                     newIdentDefs(
                                         ident(fmt"{it[0]}Field"),
-                                        ident(fmt"{it[0]}Impl").generalize()
+                                        ident(fmt"{it[0]}Impl").generalize(generics)
                                     )
                             )
                         )
@@ -138,9 +139,10 @@ proc makeType(name: NimNode, generics: NimNode, fields: seq[NimNode], kinds: seq
     result.add variant
 
 func makeConstructor(name: NimNode, generics: NimNode, kinds: seq[(NimNode, VariantKind, seq[NimNode])]): seq[NimNode] =
-    proc generalize(id: NimNode): NimNode =
+    func generalize(id: NimNode, generics: NimNode): NimNode =
         if generics.kind == nnkEmpty:
             return id
+        generics.expectKind(nnkGenericParams)
         # id, @[T1: SomeInteger, T2: SomeFloat] -> id[T1, T2]
         nnkBracketExpr.newTree(id).add(
             generics.mapIt(
@@ -157,12 +159,12 @@ func makeConstructor(name: NimNode, generics: NimNode, kinds: seq[(NimNode, Vari
             newEmptyNode(),
             generics,
             nnkFormalParams.newTree(
-                name.generalize(),
+                name.generalize(generics),
                 newIdentDefs(
                     ident"typ",
                     nnkBracketExpr.newTree(
                         ident"typedesc",
-                        name.generalize()
+                        name.generalize(generics)
                     )
                 )
             ).add(
@@ -176,7 +178,7 @@ func makeConstructor(name: NimNode, generics: NimNode, kinds: seq[(NimNode, Vari
             newEmptyNode(),
             newStmtList(
                 nnkObjConstr.newTree(
-                    name.generalize(),
+                    name.generalize(generics),
                     newColonExpr(
                         ident"kind",
                         newDotExpr(
@@ -190,7 +192,7 @@ func makeConstructor(name: NimNode, generics: NimNode, kinds: seq[(NimNode, Vari
                         @[newColonExpr(
                             ident(fmt"{it[0].strVal}Field"),
                             nnkObjConstr.newTree(
-                                ident(fmt"{it[0].strVal}Impl").generalize()
+                                ident(fmt"{it[0].strVal}Impl").generalize(generics)
                             ).add(
                                 it[2].mapIt(
                                     newColonExpr(it[0], it[0])
@@ -379,6 +381,7 @@ func matchTupleField(selector: NimNode, pattern: NimNode, tupleFields: seq[strin
         result = infix(field, bindSym":=", newDotExpr(selector, field))
     else:
         error "invalid pattern", pattern
+
 func matchTupleTy(selector: NimNode, pattern: NimNode, tupleFields: seq[string]): NimNode =
     pattern.matchAst:
     of `p`@nnkPar:
