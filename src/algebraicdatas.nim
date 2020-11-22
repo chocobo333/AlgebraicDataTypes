@@ -296,7 +296,6 @@ macro Algebraic*(name: untyped, body: untyped): untyped =
     result = newStmtList()
     result.add makeType(name, generics, fields, kinds)
     result.add makeConstructor(name, generics, fields, kinds)
-    echo result.repr
 
 
 template `:=`(a: untyped, b: typed): untyped =
@@ -435,6 +434,7 @@ macro `?=`*(pattern: untyped, selector: tuple): untyped =
     selector.impl(pattern)
 
 proc customPragmaNode(n: NimNode): NimNode =
+    # quoted from `macros` module
     expectKind(n, {nnkSym, nnkDotExpr, nnkBracketExpr, nnkTypeOfExpr, nnkCheckedFieldExpr})
     let
         typ = n.getTypeInst()
@@ -526,6 +526,7 @@ proc customPragmaNode(n: NimNode): NimNode =
 
 
 proc hasCustomPragma*(n: NimNode, pragma: NimNode): bool =
+    # quoted from `macros` module
     n.expectKind({nnkSym, nnkDotExpr, nnkBracketExpr, nnkTypeOfExpr, nnkCheckedFieldExpr})
     pragma.expectKind({nnkSym})
     let pragmaNode = customPragmaNode(n)
