@@ -7,6 +7,7 @@ import options
 import optionsutils
 
 import macros
+import macroutils
 import ast_pattern_matching
 
 
@@ -19,6 +20,10 @@ type
         Tagged
         Untagged
     AdtError = object of ValueError
+
+template variant {.pragma.}
+template kind {.pragma.}
+
 
 func scanName(name: NimNode): (NimNode, NimNode) =
     name.matchAst:
@@ -108,7 +113,12 @@ proc makeType(name: NimNode, generics: NimNode, fields: seq[NimNode], kinds: seq
             )
         )
         variant = nnkTypeDef.newTree(
-            postfix(name, "*"),
+            nnkPragmaExpr.newTree(
+                postfix(name, "*"),
+                nnkPragma.newTree(
+                    bindSym"variant"
+                )
+            ),
             generics,
             nnkObjectTy.newTree(
                 newEmptyNode(),
@@ -222,56 +232,6 @@ macro Algebraic*(name: untyped, body: untyped): untyped =
     result.add makeConstructor(name, generics, kinds)
 
 
-func newBreakStmt(): NimNode =
-    nnkBreakStmt.newTree(newEmptyNode())
-
-func newBreakStmt(label: NimNode): NimNode =
-    label.expectKind(nnkIdent)
-    nnkBreakStmt.newTree(label)
-
-func newBoolLitNode(a: bool): NimNode =
-    [ident"false", ident"true"][int a]
-
-func newBracketExpr(a: NimNode, b: varargs[NimNode]): NimNode =
-    nnkBracketExpr.newTree(a).add(b)
-
-func newIndex(a: NimNode, b: int): NimNode =
-    a.newBracketExpr(newIntLitNode(b))
-
-func add(father: NimNode, child: Option[NimNode]): NimNode =
-    withSome child:
-        some child:
-            father.add child
-        none:
-            father
-
-func add(father: NimNode, children: Option[seq[NimNode]]): NimNode =
-    withSome children:
-        some children:
-            father.add children
-        none:
-            father
-
-func add(father: NimNode, children: seq[Option[NimNode]]): NimNode =
-    for child in children:
-        withSome child:
-            some child:
-                father.add child
-            none:
-                discard
-    father
-
-func addElse(ifStmt: NimNode, elseBranch: NimNode): NimNode =
-    ## When `ifStmt` has no else branches, add to `elseBranch` `ifStmt`
-    ifStmt.expectKind({nnkIfStmt, nnkIfExpr})
-    elseBranch.expectKind({nnkElse, nnkElseExpr})
-    if ifStmt[^1].kind in {nnkElse, nnkElseExpr}:
-        ifStmt.add elseBranch
-    ifStmt
-
-func infix(lhs, op, rhs: NimNode): NimNode =
-    nnkInfix.newTree(op, lhs, rhs)
-
 template `:=`(a: untyped, b: typed): untyped =
     let a = b
     true
@@ -285,6 +245,27 @@ template `:==`(a: untyped, b: typed): untyped =
     else:
         bind `:=`
         a := b
+
+proc matchDiscardingPattern(selector: NimNode, pattern: NimNode, fn: proc(selector: NimNode, pattern: NimNode): NimNode): Option[NimNode] =
+    pattern.matchAst:
+    # discarding the value
+    # _
+    of nnkIdent(strVal = "_"):
+        return some newBoolLitNode(true)
+    # capturing or comparing to an existing variable
+    # name
+    of `p`@nnkIdent:
+        return some infix(p, bindSym":==", selector)
+    # captruing, never comparing to an existing variable
+    # name@_
+    of nnkInfix(ident"@", `id`@nnkIdent, nnkIdent(strVal = "_")):
+        return some infix(id, bindSym":=", selector)
+    # mathing and capturing
+    # name@pat
+    of nnkInfix(ident"@", `id`@nnkIdent, `p`@_):
+        return some infix(fn(selector, p), "and", infix(id, bindSym":=", selector))
+    else:
+        none NimNode
 
 macro `?=`*(pattern: untyped, selector: AtomType|string): untyped =
     func impl(selector: NimNode, pattern: NimNode): NimNode =
@@ -421,6 +402,120 @@ macro `?=`*(pattern: untyped, selector: tuple): untyped =
             error "unreachable", selector
     selector.impl(pattern)
 
+proc customPragmaNode(n: NimNode): NimNode =
+    expectKind(n, {nnkSym, nnkDotExpr, nnkBracketExpr, nnkTypeOfExpr, nnkCheckedFieldExpr})
+    let
+        typ = n.getTypeInst()
+
+    if typ.kind == nnkBracketExpr and typ.len > 1 and typ[1].kind == nnkProcTy:
+        return typ[1][1]
+    elif typ.typeKind == ntyTypeDesc:
+        let impl = typ[1].getImpl()
+        if impl[0].kind == nnkPragmaExpr:
+            return impl[0][1]
+        else:
+            return impl[0] # handle types which don't have macro at all
+
+
+    if n.kind == nnkSym: # either an variable or a proc
+        let impl = n.getImpl()
+        if impl.kind in RoutineNodes:
+            return impl.pragma
+        elif impl.kind == nnkIdentDefs and impl[0].kind == nnkPragmaExpr:
+            return impl[0][1]
+        else:
+            typ.matchAst:
+            of nnkSym:
+                typ.getImpl.matchAst:
+                of nnkTypeDef(nnkPragmaExpr(_, `p`@nnkPragma), {nnkGenericParams, nnkEmpty}, {nnkObjectTy, nnkTupleTy, nnkEnumTy}):
+                    return p
+                of nnkTypeDef(nnkEmpty, {nnkGenericParams, nnkEmpty}, {nnkObjectTy, nnkTupleTy, nnkEnumTy}):
+                    return newEmptyNode()
+            of nnkBracketExpr:
+                typ[0].getImpl.matchAst:
+                of nnkTypeDef(nnkPragmaExpr(_, `p`@nnkPragma), {nnkGenericParams, nnkEmpty}, {nnkObjectTy, nnkTupleTy, nnkEnumTy}):
+                    return p
+                of nnkTypeDef(nnkEmpty, {nnkGenericParams, nnkEmpty}, {nnkObjectTy, nnkTupleTy, nnkEnumTy}):
+                    return newEmptyNode()
+
+            # let timpl = typ.getImpl()
+            # if timpl.len>0 and timpl[0].len>1:
+            #     return timpl[0][1]
+            # else:
+            #     return timpl
+
+    if n.kind in {nnkDotExpr, nnkCheckedFieldExpr}:
+        let name = $(if n.kind == nnkCheckedFieldExpr: n[0][1] else: n[1])
+        let typInst = getTypeInst(if n.kind == nnkCheckedFieldExpr or n[0].kind == nnkHiddenDeref: n[0][0] else: n[0])
+        var typDef = getImpl(if typInst.kind == nnkVarTy: typInst[0] else: typInst)
+        while typDef != nil:
+            typDef.expectKind(nnkTypeDef)
+            let typ = typDef[2]
+            typ.expectKind({nnkRefTy, nnkPtrTy, nnkObjectTy})
+            let isRef = typ.kind in {nnkRefTy, nnkPtrTy}
+            if isRef and typ[0].kind in {nnkSym, nnkBracketExpr}: # defines ref type for another object(e.g. X = ref X)
+                typDef = getImpl(typ[0])
+            else: # object definition, maybe an object directly defined as a ref type
+                let
+                    obj = (if isRef: typ[0] else: typ)
+                var identDefsStack = newSeq[NimNode](obj[2].len)
+                for i in 0..<identDefsStack.len: identDefsStack[i] = obj[2][i]
+                while identDefsStack.len > 0:
+                    var identDefs = identDefsStack.pop()
+                    if identDefs.kind == nnkRecCase:
+                        identDefsStack.add(identDefs[0])
+                        for i in 1..<identDefs.len:
+                            let varNode = identDefs[i]
+                            # if it is and empty branch, skip
+                            if varNode[0].kind == nnkNilLit: continue
+                            if varNode[1].kind == nnkIdentDefs:
+                                identDefsStack.add(varNode[1])
+                            else: # nnkRecList
+                                for j in 0 ..< varNode[1].len:
+                                    identDefsStack.add(varNode[1][j])
+
+                    else:
+                        for i in 0 .. identDefs.len - 3:
+                            let varNode = identDefs[i]
+                            if varNode.kind == nnkPragmaExpr:
+                                var varName = varNode[0]
+                                if varName.kind == nnkPostfix:
+                                    # This is a public field. We are skipping the postfix *
+                                    varName = varName[1]
+                                if eqIdent($varName, name):
+                                    return varNode[1]
+
+                if obj[1].kind == nnkOfInherit: # explore the parent object
+                    typDef = getImpl(obj[1][0])
+                else:
+                    typDef = nil
+
+
+proc hasCustomPragma*(n: NimNode, pragma: NimNode): bool =
+    n.expectKind({nnkSym, nnkDotExpr, nnkBracketExpr, nnkTypeOfExpr, nnkCheckedFieldExpr})
+    pragma.expectKind({nnkSym})
+    let pragmaNode = customPragmaNode(n)
+    for p in pragmaNode:
+        if (p.kind == nnkSym and p == pragma) or
+                (p.kind in {nnkExprColonExpr, nnkCall, nnkCallStrLit} and p.len > 0 and p[0].kind == nnkSym and p[0] == pragma):
+            return true
+    return false
+
+proc matchVariantObject(selector: NimNode, pattern: NimNode): NimNode =
+    newStmtList()
+    
+
+macro `?=`*(pattern: untyped, selector: object): untyped =
+    proc impl(selector: NimNode, pattern: NimNode): NimNode =
+        withSome selector.matchDiscardingPattern(pattern, impl):
+            some nn:
+                return nn
+            none:
+                discard
+        if selector.hasCustomPragma(bindSym"variant"):
+            return selector.matchVariantObject(pattern)
+    selector.impl(pattern)
+
 macro match*(n: varargs[untyped]): untyped =
     func impl(selector: NimNode, body: NimNode): NimNode =
         body.matchAst:
@@ -488,16 +583,34 @@ template otpOr*{a or false}(a: bool): bool = a
 # TODO: do not hint about comparisons with an existing variable if the variable is declared in a match statement
 #       detect using `declaredInScope`
 # TODO: In `makeConstructor`, distinguish between an ident for parameter and one for object constructor field
+# TODO: more constructor
 
 {.experimental: "caseStmtMacros".}
 
-expandMacros:
-    Algebraic Color:
-        Rgb(int8, int8, int8)
-        Name(string)
-    Algebraic Shape[T: SomeFloat]:
-        Square(T)
-        Rectangle(w: T, h: T)
-        x: T
-        y: T
-        color: Color
+
+Algebraic Color:
+    Rgb(r: int8, g: int8, b: int8)
+    Name(string)
+Algebraic Shape[T: SomeFloat]:
+    Square(T)
+    Rectangle(w: T, h: T)
+    x: T
+    y: T
+    color: Color
+
+type
+    AKind {.variant.} = enum
+        B
+    A {.variant.} = object
+        case kind {.kind.}: AKind
+        of B:
+            nil
+    C {.variant.} = tuple
+    D = object
+        a: A
+
+var
+    red = Color.Name("red")
+
+if _ ?= red:
+    echo "any"
