@@ -246,37 +246,30 @@ template `:==`(a: untyped, b: typed): untyped =
         bind `:=`
         a := b
 
-proc matchDiscardingPattern(selector: NimNode, pattern: NimNode, fn: proc(selector: NimNode, pattern: NimNode): NimNode): Option[NimNode] =
+template matchDiscardingPattern(selector: NimNode, pattern: NimNode, inductive: untyped): untyped =
     pattern.matchAst:
     # discarding the value
     # _
     of nnkIdent(strVal = "_"):
-        return some newBoolLitNode(true)
+        return newBoolLitNode(true)
     # capturing or comparing to an existing variable
     # name
     of `p`@nnkIdent:
-        return some infix(p, bindSym":==", selector)
+        return infix(p, bindSym":==", selector)
     # captruing, never comparing to an existing variable
     # name@_
     of nnkInfix(ident"@", `id`@nnkIdent, nnkIdent(strVal = "_")):
-        return some infix(id, bindSym":=", selector)
+        return infix(id, bindSym":=", selector)
     # mathing and capturing
     # name@pat
     of nnkInfix(ident"@", `id`@nnkIdent, `p`@_):
-        return some infix(fn(selector, p), "and", infix(id, bindSym":=", selector))
+        return infix(inductive, "and", infix(id, bindSym":=", selector))
     else:
-        none NimNode
-
-template discarding(selector, pattern, fn: untyped): untyped =
-    withSome selector.matchDiscardingPattern(pattern, fn):
-        some nn:
-            return nn
-        none:
-            discard
+        discard
 
 macro `?=`*(pattern: untyped, selector: AtomType|string): untyped =
     func impl(selector: NimNode, pattern: NimNode): NimNode =
-        selector.discarding(pattern, impl)
+        selector.matchDiscardingPattern(pattern, impl(selector, pattern))
         pattern.matchAst:
         # match with literals: strict pattern
         # such as 3, 'a' or "abc"
@@ -297,6 +290,7 @@ func scanTupleInfo(selector: NimNode): (NimNodeKind, int, seq[string]) =
         raise newException(AdtError, "Unexpected Error")
 
 func mathcTupleConstr(selector: NimNode, pattern: NimNode, tupleLen: int): NimNode =
+    selector.matchDiscardingPattern(pattern, mathcTupleConstr(selector, p, tupleLen))
     pattern.matchAst:
     # (pat0, pat1)
     of `p`@nnkPar:
@@ -306,20 +300,6 @@ func mathcTupleConstr(selector: NimNode, pattern: NimNode, tupleLen: int): NimNo
         result = toSeq(p.children).enumerate.mapIt(
             infix(it[1], "?=", selector.newIndex(it[0]))
         ).foldl(infix(a, "and", b))
-    of nnkIdent(strVal = "_"):
-        result = newBoolLitNode(true)
-    # capturing or comparing to an existing variable
-    # name
-    of `p`@nnkIdent:
-        result = infix(p, bindSym":==", selector)
-    # captruing, never comparing to an existing variable
-    # name@_
-    of nnkInfix(ident"@", `id`@nnkIdent, nnkIdent(strVal = "_")):
-        result = infix(id, bindSym":=", selector)
-    # mathing and capturing
-    # name@pat
-    of nnkInfix(ident"@", `id`@nnkIdent, `p`@_):
-        result = infix(selector.mathcTupleConstr(p, tupleLen), "and", infix(id, bindSym":=", selector))
     else:
         error "invalid pattern", pattern
 
@@ -356,26 +336,13 @@ func matchTupleField(selector: NimNode, pattern: NimNode, tupleFields: seq[strin
         error "invalid pattern", pattern
 
 func matchTupleTy(selector: NimNode, pattern: NimNode, tupleFields: seq[string]): NimNode =
+    selector.matchDiscardingPattern(pattern, matchTupleTy(selector, pattern, tupleFields))
     pattern.matchAst:
     of `p`@nnkPar:
         var usedFields: seq[string]
         result = toSeq(p.children).mapIt(
             selector.matchTupleField(it, tupleFields, usedFields)
         ).foldl(infix(a, "and", b))
-    of nnkIdent(strVal = "_"):
-        result = newBoolLitNode(true)
-    # capturing or comparing to an existing variable
-    # name
-    of `p`@nnkIdent:
-        result = infix(p, bindSym":==", selector)
-    # captruing, never comparing to an existing variable
-    # name@_
-    of nnkInfix(ident"@", `id`@nnkIdent, nnkIdent(strVal = "_")):
-        result = infix(id, bindSym":=", selector)
-    # mathing and capturing
-    # name@pat
-    of nnkInfix(ident"@", `id`@nnkIdent, `p`@_):
-        result = infix(selector.matchTupleTy(p, tupleFields), "and", infix(id, bindSym":=", selector))
     else:
         error "invalid pattern", pattern
 
@@ -494,14 +461,14 @@ proc hasCustomPragma*(n: NimNode, pragma: NimNode): bool =
     return false
 
 proc matchVariantObject(selector: NimNode, pattern: NimNode): NimNode =
-    newStmtList()
+    newBoolLitNode(true)
     
 
 macro `?=`*(pattern: untyped, selector: object): untyped =
     proc impl(selector: NimNode, pattern: NimNode): NimNode =
-        selector.discarding(pattern, impl)
         if selector.hasCustomPragma(bindSym"variant"):
             return selector.matchVariantObject(pattern)
+        selector.matchDiscardingPattern(pattern, impl(selector, pattern))
     selector.impl(pattern)
 
 macro match*(n: varargs[untyped]): untyped =
@@ -601,4 +568,7 @@ var
     red = Color.Name("red")
 
 if _ ?= red:
+    echo "any"
+
+if Name(_) ?= red:
     echo "any"
