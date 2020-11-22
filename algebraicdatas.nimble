@@ -12,3 +12,5 @@ srcDir        = "src"
 requires "nim >= 1.4.0"
 requires "ast_pattern_matching"
 requires "optionsutils"
+
+requires "https://github.com/chocobo333/macroutils"
