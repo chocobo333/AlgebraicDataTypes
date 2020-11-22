@@ -4,7 +4,6 @@ import strutils
 import sequtils
 import tables
 import options
-import optionsutils
 
 import macros
 import macroutils
@@ -148,7 +147,7 @@ proc makeType(name: NimNode, generics: NimNode, fields: seq[NimNode], kinds: seq
     result.add impls
     result.add variant
 
-func makeConstructor(name: NimNode, generics: NimNode, kinds: seq[(NimNode, VariantKind, seq[NimNode])]): seq[NimNode] =
+func makeConstructor(name: NimNode, generics: NimNode, fields: seq[NimNode], kinds: seq[(NimNode, VariantKind, seq[NimNode])]): seq[NimNode] =
     func generalize(id: NimNode, generics: NimNode): NimNode =
         if generics.kind == nnkEmpty:
             return id
@@ -163,7 +162,74 @@ func makeConstructor(name: NimNode, generics: NimNode, kinds: seq[(NimNode, Vari
         )
     let
         kindId = ident(fmt"{name.strVal}Kind")
-    kinds.mapIt(
+    result.add nnkProcDef.newTree(
+        ident(fmt"new{name.strVal}"),
+        newEmptyNode(),
+        generics,
+        nnkFormalParams.newTree(
+            name.generalize(generics)
+        ).add(fields),
+        newEmptyNode(),
+        newEmptyNode(),
+        newStmtList(
+            nnkObjConstr.newTree(
+                name.generalize(generics),
+            ).add fields.mapIt(
+                newColonExpr(
+                    it[0],
+                    it[0]
+                )
+            )
+        )
+    )
+    result.add kinds.mapIt(
+        nnkProcDef.newTree(
+            it[0],
+            newEmptyNode(),
+            generics,
+            nnkFormalParams.newTree(
+                name.generalize(generics),
+                newIdentDefs(
+                    ident":val",
+                    name.generalize(generics)
+                )
+            ).add(
+                case it[1]
+                of Untagged:
+                    it[2].enumerate.mapIt newIdentDefs(ident(fmt"a{it[0]}"), it[1])
+                else:
+                    it[2]
+            ),
+            newEmptyNode(),
+            newEmptyNode(),
+            newStmtList(
+                newAssignment(ident"result", ident":val")
+            ).add(
+                case it[1]
+                    of Tagged:
+                        @[newAssignment(
+                            ident"result".newDotExpr(ident(fmt"{it[0].strVal}Field")),
+                            nnkObjConstr.newTree(
+                                ident(fmt"{it[0].strVal}Impl").generalize(generics)
+                            ).add(
+                                it[2].mapIt(
+                                    newColonExpr(it[0], it[0])
+                                )
+                            )
+                        )]
+                    of Untagged:
+                        @[newAssignment(
+                            ident"result".newDotExpr(ident(fmt"{it[0].strVal}Field")),
+                            nnkTupleConstr.newTree(
+                                it[2].enumerate.mapIt ident(fmt"a{it[0]}")
+                            )
+                        )]
+                    of NoField:
+                        @[]
+            )
+        )
+    )
+    result.add kinds.mapIt(
         nnkProcDef.newTree(
             it[0],
             newEmptyNode(),
@@ -229,7 +295,8 @@ macro Algebraic*(name: untyped, body: untyped): untyped =
         (fields, kinds) = scanFields(body)
     result = newStmtList()
     result.add makeType(name, generics, fields, kinds)
-    result.add makeConstructor(name, generics, kinds)
+    result.add makeConstructor(name, generics, fields, kinds)
+    echo result.repr
 
 
 template `:=`(a: untyped, b: typed): untyped =
@@ -238,9 +305,10 @@ template `:=`(a: untyped, b: typed): untyped =
 
 template `:==`(a: untyped, b: typed): untyped =
     when declared(a):
-        const
-            s = astToStr(a)
-        {.hint: "The variable `" & s & "` has already been declared. It will be compared to the existing variable, so it may not be the behavior you intend. If you want to capture a variable instead of comparing it to the existing variable, you can use the pattern `" & s & "@_`.".}
+        when not declaredInScope(a):
+            const
+                s = astToStr(a)
+            {.hint: "The variable `" & s & "` has already been declared. It will be compared to the existing variable, so it may not be the behavior you intend. If you want to capture a variable instead of comparing it to the existing variable, you can use the pattern `" & s & "@_`.".}
         a == b
     else:
         bind `:=`
@@ -289,7 +357,7 @@ func scanTupleInfo(selector: NimNode): (NimNodeKind, int, seq[string]) =
         # TODO:
         raise newException(AdtError, "Unexpected Error")
 
-func mathcTupleConstr(selector: NimNode, pattern: NimNode, tupleLen: int): NimNode =
+proc mathcTupleConstr(selector: NimNode, pattern: NimNode, tupleLen: int): NimNode =
     selector.matchDiscardingPattern(pattern, mathcTupleConstr(selector, p, tupleLen))
     pattern.matchAst:
     # (pat0, pat1)
@@ -307,9 +375,9 @@ func matchTupleField(selector: NimNode, pattern: NimNode, tupleFields: seq[strin
     pattern.matchAst:
     of nnkExprColonExpr(`field`@nnkIdent, `p`@_):
         if field.strVal notin tupleFields:
-            error "undeclared field: " & field.strVal, field
+            error "undeclared field: " & field.strVal & "notin " & $tupleFields, field
         if field.strVal in usedFields:
-            error "this field has alread appeared in patten: " & field.strVal, field
+            error "this field has already appeared in patten: " & field.strVal, field
         # if (p.kind == nnkIdent and p.strVal == field.strVal):
         p.matchAst:
         of nnkIdent(strVal = field.strVal):
@@ -329,10 +397,15 @@ func matchTupleField(selector: NimNode, pattern: NimNode, tupleFields: seq[strin
                 field
             )
         if field.strVal in usedFields:
-            error "this field has alread appeared in patten: " & field.strVal, field
+            error "this field has already appeared in patten: " & field.strVal, field
         usedFields.add field.strVal
         result = infix(field, bindSym":=", newDotExpr(selector, field))
     else:
+        error(
+                tupleFields.filterIt(it notin usedFields).mapIt(
+                    &"You can use the pattern `{it}: subpattern` or `{it}`."
+                ).join("\n"), pattern
+            )
         error "invalid pattern", pattern
 
 func matchTupleTy(selector: NimNode, pattern: NimNode, tupleFields: seq[string]): NimNode =
@@ -347,7 +420,7 @@ func matchTupleTy(selector: NimNode, pattern: NimNode, tupleFields: seq[string])
         error "invalid pattern", pattern
 
 macro `?=`*(pattern: untyped, selector: tuple): untyped =
-    func impl(selector: NimNode, pattern: NimNode): NimNode =
+    proc impl(selector: NimNode, pattern: NimNode): NimNode =
         let (tupleKind, tupleLen, tupleFields) = scanTupleInfo(selector)
         case tupleKind:
         # (val0, val1)
@@ -388,14 +461,16 @@ proc customPragmaNode(n: NimNode): NimNode =
                 typ.getImpl.matchAst:
                 of nnkTypeDef(nnkPragmaExpr(_, `p`@nnkPragma), {nnkGenericParams, nnkEmpty}, {nnkObjectTy, nnkTupleTy, nnkEnumTy}):
                     return p
-                of nnkTypeDef(nnkEmpty, {nnkGenericParams, nnkEmpty}, {nnkObjectTy, nnkTupleTy, nnkEnumTy}):
+                of nnkTypeDef(_, {nnkGenericParams, nnkEmpty}, {nnkObjectTy, nnkTupleTy, nnkEnumTy}):
                     return newEmptyNode()
             of nnkBracketExpr:
                 typ[0].getImpl.matchAst:
                 of nnkTypeDef(nnkPragmaExpr(_, `p`@nnkPragma), {nnkGenericParams, nnkEmpty}, {nnkObjectTy, nnkTupleTy, nnkEnumTy}):
                     return p
-                of nnkTypeDef(nnkEmpty, {nnkGenericParams, nnkEmpty}, {nnkObjectTy, nnkTupleTy, nnkEnumTy}):
+                of nnkTypeDef(_, {nnkGenericParams, nnkEmpty}, {nnkObjectTy, nnkTupleTy, nnkEnumTy}):
                     return newEmptyNode()
+            else:
+                discard
 
             # let timpl = typ.getImpl()
             # if timpl.len>0 and timpl[0].len>1:
@@ -460,8 +535,56 @@ proc hasCustomPragma*(n: NimNode, pragma: NimNode): bool =
             return true
     return false
 
+proc scanKinds(selector: NimNode): (seq[NimNode], seq[NimNode], seq[NimNode]) =
+    let reclist = selector.getTypeImpl[2]
+    for reccase in reclist:
+        if reccase.kind != nnkRecCase:
+            continue
+        assert reccase.kind == nnkRecCase
+        assert reccase[0].kind == nnkIdentDefs
+        result[0] = reccase[0][1].getTypeImpl[1..^1] # `Kind`
+        for e in reccase[1..^1]:
+            if e.kind == nnkRecCase:
+                continue
+            assert e.kind == nnkOfBranch
+            assert e[0].kind == nnkIntLit
+            assert e[1].kind == nnkRecList
+            if e[1].len == 0:
+                result[1].add newEmptyNode()
+                result[2].add newEmptyNode()
+                continue
+            assert e[1][0].kind == nnkIdentDefs
+            result[1].add e[1][0][0] # `Kind`Field
+            result[2].add e[1][0][1] # `Kind`Impl
+    
+
 proc matchVariantObject(selector: NimNode, pattern: NimNode): NimNode =
-    newBoolLitNode(true)
+    assert selector.hasCustomPragma(bindSym"variant")
+    let
+        (kinds, kindFields, kindImpls) = selector.scanKinds()
+    pattern.matchAst:
+    of {nnkCall, nnkObjConstr} |= pattern[0].kind == nnkIdent:
+        let
+            id = pattern[0]
+            i = kinds.mapIt(it.strVal).find(id.strVal)
+            args = if pattern.len > 1: pattern[1..^1] else: @[]
+        if i == -1:
+            error "You can use one of " & $kinds.mapIt(it.strVal), pattern
+        if kindFields[i].kind == nnkEmpty and kindImpls[i].kind == nnkEmpty:
+            error &"It has no fields\nYou can simply use the pattern `{kinds[i].strVal}`", pattern
+        return infix(infix(selector.newDotExpr(ident"kind"), "==", kinds[i]), "and", infix(nnkPar.newTree(args), "?=", selector.newDotExpr(kindFields[i])))
+    of nnkIdent |= pattern.strVal in kinds.mapIt(it.strVal):
+        let
+            i = kinds.mapIt(it.strVal).find(pattern.strVal)
+        if kindFields[i].kind != nnkEmpty and kindImpls[i].kind != nnkEmpty:
+            error &"It has field(s)\nYou must use `{kinds[i].strVal}(subpatterns)`", pattern
+        return infix(selector.newDotExpr(ident"kind"), "==", kinds[i])
+    else:
+        discard
+
+    selector.matchDiscardingPattern(pattern, matchVariantObject(selector, pattern))
+    error "invalid pattern", pattern
+
     
 
 macro `?=`*(pattern: untyped, selector: object): untyped =
@@ -469,6 +592,8 @@ macro `?=`*(pattern: untyped, selector: object): untyped =
         if selector.hasCustomPragma(bindSym"variant"):
             return selector.matchVariantObject(pattern)
         selector.matchDiscardingPattern(pattern, impl(selector, pattern))
+        let fields = toSeq(selector.getTypeImpl[2].children).filterIt(it.kind==nnkIdentDefs).mapIt(it[0].strVal)
+        selector.matchTupleTy(pattern, fields)
     selector.impl(pattern)
 
 macro match*(n: varargs[untyped]): untyped =
@@ -527,48 +652,5 @@ template optOr*{a or true}(a: bool{noSideEffect}): bool = true
 template otpOr*{false or a}(a: bool): bool = a
 template otpOr*{a or false}(a: bool): bool = a
 
-# TODO: smarter error infomation: tuple length check, wheter ofBranch is, wheter discard pattern is,  and so on
-# TODO:     detect whether `==` is declared and emit error
-# TODO: use bindSym instead making method public
-# TODO: smarter existing variable pattern such as `name ?= 3` (when the variable does not exist, the pattern is regarded as `name@_`)
-# TODO: try to add structures made by Algebraic pragma which is identical: can get pragma info from other macros via `getTypeImpl`
-#       such pragma seems be called costumPragma and there are helpers: `hasCustomPragm` and `getCustomPragmaVal` in macros
-# TODO: make else branch appear
-# TODO: turn proc into func
-# TODO: do not hint about comparisons with an existing variable if the variable is declared in a match statement
-#       detect using `declaredInScope`
-# TODO: In `makeConstructor`, distinguish between an ident for parameter and one for object constructor field
-# TODO: more constructor
 
 {.experimental: "caseStmtMacros".}
-
-
-Algebraic Color:
-    Rgb(r: int8, g: int8, b: int8)
-    Name(string)
-Algebraic Shape[T: SomeFloat]:
-    Square(T)
-    Rectangle(w: T, h: T)
-    x: T
-    y: T
-    color: Color
-
-type
-    AKind {.variant.} = enum
-        B
-    A {.variant.} = object
-        case kind {.kind.}: AKind
-        of B:
-            nil
-    C {.variant.} = tuple
-    D = object
-        a: A
-
-var
-    red = Color.Name("red")
-
-if _ ?= red:
-    echo "any"
-
-if Name(_) ?= red:
-    echo "any"
