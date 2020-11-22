@@ -267,29 +267,21 @@ proc matchDiscardingPattern(selector: NimNode, pattern: NimNode, fn: proc(select
     else:
         none NimNode
 
+template discarding(selector, pattern, fn: untyped): untyped =
+    withSome selector.matchDiscardingPattern(pattern, fn):
+        some nn:
+            return nn
+        none:
+            discard
+
 macro `?=`*(pattern: untyped, selector: AtomType|string): untyped =
     func impl(selector: NimNode, pattern: NimNode): NimNode =
+        selector.discarding(pattern, impl)
         pattern.matchAst:
         # match with literals: strict pattern
         # such as 3, 'a' or "abc"
         of `p`@nnkLiterals:
             result = infix(p, "==", selector)
-        # discarding the value
-        # _
-        of nnkIdent(strVal = "_"):
-            result = newBoolLitNode(true)
-        # capturing or comparing to an existing variable
-        # name
-        of `p`@nnkIdent:
-            result = infix(p, bindSym":==", selector)
-        # captruing, never comparing to an existing variable
-        # name@_
-        of nnkInfix(ident"@", `id`@nnkIdent, nnkIdent(strVal = "_")):
-            result = infix(id, bindSym":=", selector)
-        # mathing and capturing
-        # name@pat
-        of nnkInfix(ident"@", `id`@nnkIdent, `p`@_):
-            result = infix(selector.impl(p), "and", infix(id, bindSym":=", selector))
         else:
             error "invlid pattern", pattern
     selector.impl(pattern)
@@ -507,11 +499,7 @@ proc matchVariantObject(selector: NimNode, pattern: NimNode): NimNode =
 
 macro `?=`*(pattern: untyped, selector: object): untyped =
     proc impl(selector: NimNode, pattern: NimNode): NimNode =
-        withSome selector.matchDiscardingPattern(pattern, impl):
-            some nn:
-                return nn
-            none:
-                discard
+        selector.discarding(pattern, impl)
         if selector.hasCustomPragma(bindSym"variant"):
             return selector.matchVariantObject(pattern)
     selector.impl(pattern)
