@@ -18,7 +18,7 @@ type
         NoField
         Tagged
         Untagged
-    AdtError = object of ValueError
+    MatchError = object of ValueError
 
 template variant {.pragma.}
 template kind {.pragma.}
@@ -89,10 +89,10 @@ proc makeType(name: NimNode, generics: NimNode, fields: seq[NimNode], kinds: seq
     let
         genericParams = generics.mapIt(it)
         kindId = ident(fmt"{name}kind")
-        kind = newEnum(kindId, kinds.mapIt(it[0]), false, true)[0]
+        kind = newEnum(kindId, kinds.mapIt(it[0]), true, true)[0]
         impls = kinds.filterIt(it[1] != NoField).mapIt(
             nnkTypeDef.newTree(
-                ident(fmt"{it[0]}Impl"),
+                postfix(ident(fmt"{it[0]}Impl"), "*"),
                 generics,
                 case it[1]
                 of Tagged:
@@ -100,7 +100,7 @@ proc makeType(name: NimNode, generics: NimNode, fields: seq[NimNode], kinds: seq
                         newEmptyNode(),
                         newEmptyNode(),
                         nnkRecList.newTree(
-                            it[2]
+                            it[2].mapIt(newIdentDefs(postfix(it[0], "*"), it[1]))
                         )
                     )
                 of Untagged:
@@ -122,9 +122,9 @@ proc makeType(name: NimNode, generics: NimNode, fields: seq[NimNode], kinds: seq
             nnkObjectTy.newTree(
                 newEmptyNode(),
                 newEmptyNode(),
-                nnkRecList.newTree(fields).add(
+                nnkRecList.newTree(fields.mapIt(newIdentDefs(postfix(it[0], "*"), it[1]))).add(
                     nnkRecCase.newTree(
-                        newIdentDefs(ident"kind", kindId)
+                        newIdentDefs(postfix(ident"kind", "*"), kindId)
                     ).add kinds.mapIt(
                         nnkOfBranch.newTree(
                             newDotExpr(kindId, it[0]),
@@ -134,7 +134,7 @@ proc makeType(name: NimNode, generics: NimNode, fields: seq[NimNode], kinds: seq
                                     newNilLit()
                                 else:
                                     newIdentDefs(
-                                        ident(fmt"{it[0]}Field"),
+                                        postfix(ident(fmt"{it[0]}Field"), "*"),
                                         ident(fmt"{it[0]}Impl").generalize(generics)
                                     )
                             )
@@ -163,7 +163,7 @@ func makeConstructor(name: NimNode, generics: NimNode, fields: seq[NimNode], kin
     let
         kindId = ident(fmt"{name.strVal}Kind")
     result.add nnkProcDef.newTree(
-        ident(fmt"new{name.strVal}"),
+        postfix(ident(fmt"new{name.strVal}"), "*"),
         newEmptyNode(),
         generics,
         nnkFormalParams.newTree(
@@ -184,7 +184,7 @@ func makeConstructor(name: NimNode, generics: NimNode, fields: seq[NimNode], kin
     )
     result.add kinds.mapIt(
         nnkProcDef.newTree(
-            it[0],
+            postfix(it[0], "*"),
             newEmptyNode(),
             generics,
             nnkFormalParams.newTree(
@@ -231,7 +231,7 @@ func makeConstructor(name: NimNode, generics: NimNode, fields: seq[NimNode], kin
     )
     result.add kinds.mapIt(
         nnkProcDef.newTree(
-            it[0],
+            postfix(it[0], "*"),
             newEmptyNode(),
             generics,
             nnkFormalParams.newTree(
@@ -354,7 +354,7 @@ func scanTupleInfo(selector: NimNode): (NimNodeKind, int, seq[string]) =
         (a.kind, a.len, @[])
     else:
         # TODO:
-        raise newException(AdtError, "Unexpected Error")
+        raise newException(MatchError, "Unexpected Error")
 
 proc mathcTupleConstr(selector: NimNode, pattern: NimNode, tupleLen: int): NimNode =
     selector.matchDiscardingPattern(pattern, mathcTupleConstr(selector, p, tupleLen))
@@ -639,6 +639,15 @@ macro match*(n: varargs[untyped]): untyped =
             nnkIfStmt.newTree(
                 body.mapIt(
                     ident":selector".impl(it)
+                )
+            ).addElse(
+                # TODO: check wheathre patterns are exhaustive or not
+                newStmtList(
+                    block:
+                        let
+                            err = bindSym"MatchError"
+                        quote do:
+                            raise newException(err, "No match. (This behavior is adhoc implementation.)")
                 )
             )
         )

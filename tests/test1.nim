@@ -24,6 +24,9 @@ Algebraic Number:
     Int(val: int)
     Float(val: float)
 
+export
+    Some
+
 test "variant":
     check declared(Color)
     check declared(Shape)

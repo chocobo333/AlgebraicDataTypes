@@ -57,3 +57,13 @@ test "match for tagged tuple":
             3
         )
     )
+
+test "match for variant":
+    let
+        a = Option.Some(3)
+        b = case a # The same goes for `match` macro
+        of Some(val):
+            val
+        of _:
+            0
+    check b == 3
