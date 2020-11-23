@@ -1,8 +1,8 @@
 # AlgebraicDataTypes
 This package literally provides algebraic data types(ADT) and performs pattern matching for them. It's inspried by some packages: [ast-pattern-mathing](https://github.com/krux02/ast-pattern-matching) and [gara](https://github.com/alehander92/gara), and [`enum`](https://doc.rust-lang.org/book/ch06-01-defining-an-enum.html) and [pattern matching](https://doc.rust-lang.org/book/ch18-00-patterns.html) in the [Rust](https://www.rust-lang.org/) language.
 
-it provids:
-* `` `?=` ``  
+It provids two macros:
+* `` `?=` `` macro  
     It can be used like Rust's if let syntax.
     ```nim
     let a = Option.Some(3)
@@ -11,7 +11,7 @@ it provids:
     if None ?= a:
         echo "none"
     ```
-* `match`  
+* `match` macro  
     It's used for pattern matching. It's internally a compostion of if-else statement and `` `?=` `` macros.
     ```nim
     let a = Option.Some(3)
@@ -37,7 +37,7 @@ it provids:
         b = case a # The same goes for `match` macro
         of Some(val):
             val
-        of None:
+        of _:
             0
     echo b #> 3
     ```
@@ -59,13 +59,18 @@ Algebraic Option[T]:
 ## Pattern mathing
 ### value
 ### existing variable
+If a variable name is included in the pattern and the variable already exists then a comparison is made with that variable, if not, the pattern match succeeds and binds its value to the variable name.
 ```nim
-let
-    a = 3
-    b = (3, 4)
-case b
-of (a, _):
-    echo "b[0] == a"
+let a = (3, 4)
+case a
+of (b, _):
+    echo a #> 3
+let b = 1
+case a
+of (b, _):
+    echo "a[0] == b"
+of _: # pass this pattern
+    echo "not match"
 ```
 ### discarding
 ```nim
@@ -85,6 +90,7 @@ if true:
 - [ ] smarter error infomation: tuple length check, wheter ofBranch is, wheter discard pattern is,  and so on
 - [ ]     detect whether `==` is declared and emit error
 
+- [ ] support for slice(range) pattern
 - [ ] support for seq
 - [ ] support for Table
 - [ ] support for set
