@@ -59,7 +59,7 @@ Algebraic Option[T]:
 ## Pattern mathing
 ### value
 ### existing variable
-If a variable name is included in the pattern and the variable already exists then a comparison is made with that variable, if not, the pattern match succeeds and binds its value to the variable name.
+If a variable name is included in the pattern and the variable already exists, a comparison with that variable is made, if not, the pattern match succeeds and binds its value to the variable name.
 ```nim
 let a = (3, 4)
 case a

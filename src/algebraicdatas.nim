@@ -625,7 +625,14 @@ macro match*(n: varargs[untyped]): untyped =
             )
         else:
             error "invalid branch", body
-
+    func ifVerify(ifStmt: NimNode): NimNode =
+        if ifStmt.len == 1 and ifStmt[0].kind == nnkElse:
+            let s = ifStmt[0][0]
+            ifStmt[0] = nnkElifBranch.newTree(
+                newBoolLitNode(true),
+                s
+            )
+        ifStmt
     let
         selector = n[0]
         body = n[1..^1]
@@ -642,14 +649,14 @@ macro match*(n: varargs[untyped]): untyped =
                 )
             ).addElse(
                 # TODO: check wheathre patterns are exhaustive or not
-                newStmtList(
+                nnkElse.newTree(newStmtList(
                     block:
                         let
                             err = bindSym"MatchError"
                         quote do:
-                            raise newException(err, "No match. (This behavior is adhoc implementation.)")
-                )
-            )
+                            raise newException(typeof `err`, "No match. (This behavior is adhoc implementation.)")
+                ))
+            ).ifVerify()
         )
     )
 
