@@ -237,7 +237,7 @@ func makeConstructor(name: NimNode, generics: NimNode, fields: seq[NimNode], kin
             nnkFormalParams.newTree(
                 name.generalize(generics),
                 newIdentDefs(
-                    ident"typ",
+                    ident"_",
                     nnkBracketExpr.newTree(
                         ident"typedesc",
                         name.generalize(generics)
