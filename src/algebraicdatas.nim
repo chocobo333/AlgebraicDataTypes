@@ -297,18 +297,42 @@ macro Algebraic*(name: untyped, body: untyped): untyped =
     result.add makeType(name, generics, fields, kinds)
     result.add makeConstructor(name, generics, fields, kinds)
 
+macro error2(msg: static[string], n: untyped): untyped =
+    ## macro version of `error` in macros
+    ## This is useful for use in template
+    error msg, n
+macro hint2(msg: static[string], n: untyped): untyped =
+    ## macro version of `hint` in macros
+    ## This is useful for use in template
+    hint msg, n
+macro warning2(msg: static[string], n: untyped): untyped =
+    ## macro version of `warning` in macros
+    ## This is useful for use in template
+    warning msg, n
 
+template `==?`(a, b: untyped): untyped =
+    when compiles(a == b):
+        a == b
+    else:
+        bind error
+        static:
+            const
+                s1 = $typeof(a)
+                s2 = $typeof(b)
+            error2 "`==`(" & s1 & ", " & s2 & ") is not declared", a
+        false
+    
 template `:=`(a: untyped, b: typed): untyped =
-    let a = b
+    when declaredInScope(a):
+        a = b
+    else:
+        let a = b
     true
 
 template `:==`(a: untyped, b: typed): untyped =
-    when declared(a):
-        when not declaredInScope(a):
-            const
-                s = astToStr(a)
-            {.hint: "The variable `" & s & "` has already been declared. It will be compared to the existing variable, so it may not be the behavior you intend. If you want to capture a variable instead of comparing it to the existing variable, you can use the pattern `" & s & "@_`.".}
-        a == b
+    when declaredInScope(a):
+        bind `==?`
+        a ==? b
     else:
         bind `:=`
         a := b
@@ -319,11 +343,11 @@ template matchDiscardingPattern(selector: NimNode, pattern: NimNode, inductive: 
     # _
     of nnkIdent(strVal = "_"):
         return newBoolLitNode(true)
-    # capturing or comparing to an existing variable
+    # capturing or comparing to an already captured variable
     # name
     of `p`@nnkIdent:
         return infix(p, bindSym":==", selector)
-    # captruing, never comparing to an existing variable
+    # captruing, never comparing
     # name@_
     of nnkInfix(ident"@", `id`@nnkIdent, nnkIdent(strVal = "_")):
         return infix(id, bindSym":=", selector)
@@ -331,6 +355,8 @@ template matchDiscardingPattern(selector: NimNode, pattern: NimNode, inductive: 
     # name@pat
     of nnkInfix(ident"@", `id`@nnkIdent, `p`@_):
         return infix(inductive, "and", infix(id, bindSym":=", selector))
+    of nnkPrefix(ident"!", `id`@nnkIdent):
+        return infix(id, bindSym"==?", selector)
     else:
         discard
 
