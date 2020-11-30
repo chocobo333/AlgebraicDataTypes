@@ -311,15 +311,20 @@ macro warning2(msg: static[string], n: untyped): untyped =
     warning msg, n
 
 template `==?`(a, b: untyped): untyped =
-    when compiles(a == b):
+    when compiles(a.contains(b)):
+        a.contains(b)
+    elif compiles(a == b):
         a == b
     else:
-        bind error
+        bind error2
         static:
             const
                 s1 = $typeof(a)
                 s2 = $typeof(b)
-            error2 "`==`(" & s1 & ", " & s2 & ") is not declared", a
+            error2(
+                astToStr(a) & " is of type " & s1 & "\n" &  "selector is of type " & s2 & "\n" & "`==`(" & s1 & ", " & s2 & ") and `contains`(" & s1 & ", " & s2 & ") is not declared",
+                a
+            )
         false
     
 template `:=`(a: untyped, b: typed): untyped =
@@ -367,7 +372,9 @@ macro `?=`*(pattern: untyped, selector: AtomType|string): untyped =
         # match with literals: strict pattern
         # such as 3, 'a' or "abc"
         of `p`@nnkLiterals:
-            result = infix(p, "==", selector)
+            result = infix(p, bindSym"==?", selector)
+        of `p`@nnkInfix(ident"..", `a`@_, `b`@_):
+            result = newCall("contains", p, selector)
         else:
             error "invlid pattern", pattern
     selector.impl(pattern)
@@ -388,7 +395,7 @@ proc mathcTupleConstr(selector: NimNode, pattern: NimNode, tupleLen: int): NimNo
     # (pat0, pat1)
     of `p`@nnkPar:
         # TODO: use exactly match now
-        #       support short pattern
+        #       support shorter pattern
         p.expectLen(tupleLen)
         result = toSeq(p.children).enumerate.mapIt(
             infix(it[1], "?=", selector.newIndex(it[0]))
