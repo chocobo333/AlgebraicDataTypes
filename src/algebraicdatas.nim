@@ -500,8 +500,6 @@ proc getTypeImpl2*(n: NimNode): NimNode =
         else:
             return
 
-
-
 proc getVariantPragma*(n: NimNode): Option[VariantPragmaArgs] =
     template searchPragma(pragma: typed, variant: typed): untyped =
         for p in pragma:
@@ -575,12 +573,6 @@ proc getVariantPragma*(n: NimNode): Option[VariantPragmaArgs] =
             return none VariantPragmaArgs
 proc hasVariantPragma*(n: NimNode): bool =
     n.getVariantPragma.isSome
-
-            # let timpl = typ.getImpl()
-            # if timpl.len>0 and timpl[0].len>1:
-            #     return timpl[0][1]
-            # else:
-            #     return timpl
 
 func getEnumFieldAndIntValue(enumSym: NimNode): seq[(NimNode, BiggestInt)] =
     enumSym.expectKind(nnkSym)
@@ -696,7 +688,6 @@ proc matchVariantObjectNonWrapped(selector: NimNode, pattern: NimNode, args: Var
         return infix(selector.newDotExpr(args.kind), "==", kinds[i])
     error "notimplemented"
 
-
 proc matchVariantObject(selector: NimNode, pattern: NimNode): NimNode =
     let args = selector.getVariantPragma().get
     case args.mode:
@@ -708,8 +699,6 @@ proc matchVariantObject(selector: NimNode, pattern: NimNode): NimNode =
         error "notimplemented"
     selector.matchDiscardingPattern(pattern, matchVariantObject(selector, pattern))
     error "invalid pattern", pattern
-
-    
 
 macro `?=`*(pattern: untyped, selector: object): untyped =
     proc impl(selector: NimNode, pattern: NimNode): NimNode =
