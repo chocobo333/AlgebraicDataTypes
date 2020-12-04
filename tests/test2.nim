@@ -14,7 +14,7 @@ test "match for int":
                 match it: # needs wrapping with block statement, parhaps parsing of `of branch` is weak
                 of 1:
                     "first"
-                of a:
+                of !a:
                     "equals to a"
                 of _:
                     "otherwise"
@@ -30,7 +30,7 @@ test "match for untagged tuple":
         b = 2
         c = a.mapIt(
             case it: # needs no block statement for case statement
-            of (b, b): # reckoned as (2, 2)
+            of (!b, !b): # reckoned as (2, 2)
                 b
             of (3, second):
                 second
