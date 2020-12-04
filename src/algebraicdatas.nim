@@ -582,111 +582,130 @@ proc hasVariantPragma*(n: NimNode): bool =
             # else:
             #     return timpl
 
-    if n.kind in {nnkDotExpr, nnkCheckedFieldExpr}:
-        let name = $(if n.kind == nnkCheckedFieldExpr: n[0][1] else: n[1])
-        let typInst = getTypeInst(if n.kind == nnkCheckedFieldExpr or n[0].kind == nnkHiddenDeref: n[0][0] else: n[0])
-        var typDef = getImpl(if typInst.kind == nnkVarTy: typInst[0] else: typInst)
-        while typDef != nil:
-            typDef.expectKind(nnkTypeDef)
-            let typ = typDef[2]
-            typ.expectKind({nnkRefTy, nnkPtrTy, nnkObjectTy})
-            let isRef = typ.kind in {nnkRefTy, nnkPtrTy}
-            if isRef and typ[0].kind in {nnkSym, nnkBracketExpr}: # defines ref type for another object(e.g. X = ref X)
-                typDef = getImpl(typ[0])
-            else: # object definition, maybe an object directly defined as a ref type
-                let
-                    obj = (if isRef: typ[0] else: typ)
-                var identDefsStack = newSeq[NimNode](obj[2].len)
-                for i in 0..<identDefsStack.len: identDefsStack[i] = obj[2][i]
-                while identDefsStack.len > 0:
-                    var identDefs = identDefsStack.pop()
-                    if identDefs.kind == nnkRecCase:
-                        identDefsStack.add(identDefs[0])
-                        for i in 1..<identDefs.len:
-                            let varNode = identDefs[i]
-                            # if it is and empty branch, skip
-                            if varNode[0].kind == nnkNilLit: continue
-                            if varNode[1].kind == nnkIdentDefs:
-                                identDefsStack.add(varNode[1])
-                            else: # nnkRecList
-                                for j in 0 ..< varNode[1].len:
-                                    identDefsStack.add(varNode[1][j])
+func getEnumFieldAndIntValue(enumSym: NimNode): seq[(NimNode, BiggestInt)] =
+    enumSym.expectKind(nnkSym)
+    let enumTy = enumSym.getTypeImpl2[2]
+    var i: BiggestInt = 0;
+    for e in enumTy[1..^1]:
+        e.matchAst:
+        of nnkSym:
+            result.add (e, i)
+            inc i
+        of nnkEnumFieldDef(`e`@nnkSym, `j`@nnkIntLit):
+            result.add (e, j.intVal)
+            i = j.intVal + 1
+        else:
+            error "unreachable", e
 
-                    else:
-                        for i in 0 .. identDefs.len - 3:
-                            let varNode = identDefs[i]
-                            if varNode.kind == nnkPragmaExpr:
-                                var varName = varNode[0]
-                                if varName.kind == nnkPostfix:
-                                    # This is a public field. We are skipping the postfix *
-                                    varName = varName[1]
-                                if eqIdent($varName, name):
-                                    return varNode[1]
+func getFieldsFromRecList(reclist: NimNode): seq[NimNode] =
+    reclist.expectKind(nnkRecList)
+    reclist.mapIt(
+        block:
+            it.expectKind(nnkIdentDefs)
+            it[0]
+    )
 
-                if obj[1].kind == nnkOfInherit: # explore the parent object
-                    typDef = getImpl(obj[1][0])
-                else:
-                    typDef = nil
+func getFieldsFromRecCase(reccase: NimNode): seq[(BiggestInt, seq[NimNode])] =
+    func getFieldsFromOfBranch(branch: NimNode): (BiggestInt, seq[NimNode]) =
+        branch.expectKind({nnkOfBranch, nnkElse})
+        branch.matchAst:
+        of nnkOfBranch(`i`@nnkIntLit, `reclist`@nnkRecList):
+            return (i.intVal, reclist.getFieldsFromRecList)
+        of nnkElse(`reclist`@nnkRecList):
+            return (BiggestInt -1, reclist.getFieldsFromRecList)
+        else:
+            error "unreachable", branch
+    reccase.expectKind(nnkRecCase)
+    reccase[1..^1].mapIt(
+        it.getFieldsFromOfBranch()
+    )
 
+func st2ts[T, U](a: seq[(T, U)]): (seq[T], seq[U]) =
+    ## converts Seq of Tuple to Tuple of Seq
+    (a.mapIt(it[0]), a.mapIt(it[1]))
 
-proc hasCustomPragma*(n: NimNode, pragma: NimNode): bool =
-    # quoted from `macros` module
-    n.expectKind({nnkSym, nnkDotExpr, nnkBracketExpr, nnkTypeOfExpr, nnkCheckedFieldExpr})
-    pragma.expectKind({nnkSym})
-    let pragmaNode = customPragmaNode(n)
-    for p in pragmaNode:
-        if (p.kind == nnkSym and p == pragma) or
-                (p.kind in {nnkExprColonExpr, nnkCall, nnkCallStrLit} and p.len > 0 and p[0].kind == nnkSym and p[0] == pragma):
-            return true
-    return false
-
-proc scanKinds(selector: NimNode): (seq[NimNode], seq[NimNode], seq[NimNode]) =
-    let reclist = selector.getTypeImpl[2]
-    for reccase in reclist:
-        if reccase.kind != nnkRecCase:
-            continue
-        assert reccase.kind == nnkRecCase
-        assert reccase[0].kind == nnkIdentDefs
-        result[0] = reccase[0][1].getTypeImpl[1..^1] # `Kind`
-        for e in reccase[1..^1]:
-            if e.kind == nnkRecCase:
-                continue
-            assert e.kind == nnkOfBranch
-            assert e[0].kind == nnkIntLit
-            assert e[1].kind == nnkRecList
-            if e[1].len == 0:
-                result[1].add newEmptyNode()
-                result[2].add newEmptyNode()
-                continue
-            assert e[1][0].kind == nnkIdentDefs
-            result[1].add e[1][0][0] # `Kind`Field
-            result[2].add e[1][0][1] # `Kind`Impl
-    
-
-proc matchVariantObject(selector: NimNode, pattern: NimNode): NimNode =
-    assert selector.hasCustomPragma(bindSym"variant")
+proc scanKinds(selector: NimNode, args: VariantPragmaArgs): (seq[NimNode], seq[seq[NimNode]]) =
     let
-        (kinds, kindFields, kindImpls) = selector.scanKinds()
+        reclist = selector.getTypeImpl[2]
+    for e in reclist:
+        if e.kind == nnkRecCase:
+            e[0].matchAst:
+            of  nnkIdentDefs(nnkSym(strVal = args.kind.strVal), `sym`@nnkSym, nnkEmpty):
+                let
+                    kinds = getEnumFieldAndIntValue(sym)
+                    (fieldsInd, fields) = getFieldsFromRecCase(e).st2ts
+                    elseBInd = fieldsInd.find(-1)
+                result = kinds.mapIt(
+                    block:
+                        let
+                            ind = fieldsInd.find(it[1])
+                            i = if ind == -1: elseBInd else: ind
+                        (it[0], fields[i])
+                ).st2ts
+            else:
+                error "unreachable", e[0]
+
+func findTag(kinds: seq[NimNode], pattern: NimNode): int =
+    result = kinds.mapIt(it.strVal).find(pattern.strVal)
+    if result == -1:
+        let tmp = kinds[0..^2].mapIt(it.strVal).join(", ") & &" or {kinds[^1].strVal}"
+        error "invalid descriminator\nYou can use " & tmp, pattern
+
+proc matchVariantObjectWrapped(selector: NimNode, pattern: NimNode, args: VariantPragmaArgs): NimNode =
+    let
+        (kinds, kindFields) = selector.scanKinds(args)
+    echo kinds
+    echo kindFields
     pattern.matchAst:
     of {nnkCall, nnkObjConstr} |= pattern[0].kind == nnkIdent:
         let
             id = pattern[0]
-            i = kinds.mapIt(it.strVal).find(id.strVal)
-            args = if pattern.len > 1: pattern[1..^1] else: @[]
+            i = kinds.findTag(id)
+            patterns = if pattern.len > 1: pattern[1..^1] else: @[]
         if i == -1:
             error "You can use one of " & $kinds.mapIt(it.strVal), pattern
-        if kindFields[i].kind == nnkEmpty and kindImpls[i].kind == nnkEmpty:
+        if kindFields[i] == @[]:
             error &"It has no fields\nYou can simply use the pattern `{kinds[i].strVal}`", pattern
-        return infix(infix(selector.newDotExpr(ident"kind"), "==", kinds[i]), "and", infix(nnkPar.newTree(args), "?=", selector.newDotExpr(kindFields[i])))
-    of nnkIdent |= pattern.strVal in kinds.mapIt(it.strVal):
+        return infix(infix(selector.newDotExpr(args.kind), "==", kinds[i]), "and", infix(nnkPar.newTree(patterns), "?=", selector.newDotExpr(kindFields[i][0])))
+    of nnkIdent:
         let
-            i = kinds.mapIt(it.strVal).find(pattern.strVal)
-        if kindFields[i].kind != nnkEmpty and kindImpls[i].kind != nnkEmpty:
+            i = kinds.findTag(pattern)
+        if kindFields[i] != @[]:
             error &"It has field(s)\nYou must use `{kinds[i].strVal}(subpatterns)`", pattern
-        return infix(selector.newDotExpr(ident"kind"), "==", kinds[i])
+        return infix(selector.newDotExpr(args.kind), "==", kinds[i])
     else:
-        discard
+        error "invalid pattern", pattern
 
+proc matchVariantObjectNonWrapped(selector: NimNode, pattern: NimNode, args: VariantPragmaArgs): NimNode =
+    echo pattern.treeRepr
+    let
+        (kinds, kindFields) = selector.scanKinds(args)
+    pattern.matchAst:
+    of {nnkCall, nnkObjConstr} |= pattern[0].kind == nnkIdent:
+        let
+            id = pattern[0]
+            i = kinds.findTag(id)
+            patterns = if pattern.len > 1: pattern[1..^1] else: @[]
+        assert i != -1
+        return  infix(infix(selector.newDotExpr(args.kind), "==", kinds[i]), "and", selector.matchTupleTy(nnkPar.newTree(patterns), kindFields[i].mapIt(it.strVal)))
+    of nnkIdent:
+        let
+            i = kinds.findTag(pattern)
+        if kindFields[i] != @[]:
+            error &"It has field(s)\nYou must use `{kinds[i].strVal}(subpatterns)`", pattern
+        return infix(selector.newDotExpr(args.kind), "==", kinds[i])
+    error "notimplemented"
+
+
+proc matchVariantObject(selector: NimNode, pattern: NimNode): NimNode =
+    let args = selector.getVariantPragma().get
+    case args.mode:
+    of Wrapped:
+        return selector.matchVariantObjectWrapped(pattern, args)
+    of NonWrapped:
+        return selector.matchVariantObjectNonWrapped(pattern, args)
+    of NoCase:
+        error "notimplemented"
     selector.matchDiscardingPattern(pattern, matchVariantObject(selector, pattern))
     error "invalid pattern", pattern
 
