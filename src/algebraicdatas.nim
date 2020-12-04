@@ -466,20 +466,22 @@ macro `?=`*(pattern: untyped, selector: tuple): untyped =
             error "unreachable", selector
     selector.impl(pattern)
 
-proc customPragmaNode(n: NimNode): NimNode =
-    # quoted from `macros` module
-    expectKind(n, {nnkSym, nnkDotExpr, nnkBracketExpr, nnkTypeOfExpr, nnkCheckedFieldExpr})
-    let
-        typ = n.getTypeInst()
-
-    if typ.kind == nnkBracketExpr and typ.len > 1 and typ[1].kind == nnkProcTy:
-        return typ[1][1]
-    elif typ.typeKind == ntyTypeDesc:
-        let impl = typ[1].getImpl()
-        if impl[0].kind == nnkPragmaExpr:
-            return impl[0][1]
+proc getTypeImpl2*(n: NimNode): NimNode =
+    result = n.getTypeInst
+    result = if result.kind == nnkSym:
+        result.getImpl
+    else:
+        result[0].getImpl
+    while true:
+        result.matchAst:
+        of nnkTypeDef(nnkSym, nnkEmpty, `n`@nnkSym): # that is, alias
+            result = n.getImpl
+        of nnkTypeDef(nnkSym, nnkEmpty, nnkDistinctTy(`n`@nnkSym)):
+            result = n.getImpl
+        of nnkTypeDef(nnkSym, nnkEmpty, nnkRefTy(`n`@nnkSym)):
+            result = n.getImpl
         else:
-            return impl[0] # handle types which don't have macro at all
+            return
 
 
     if n.kind == nnkSym: # either an variable or a proc
