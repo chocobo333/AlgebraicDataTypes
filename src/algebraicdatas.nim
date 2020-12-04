@@ -20,9 +20,20 @@ type
         Untagged
     MatchError = object of ValueError
 
-template variant {.pragma.}
+type
+    VariantMode = enum
+        Wrapped
+        NonWrapped
+        NoCase
+    VariantPragmaArgs = object
+        kind:NimNode
+        mode: VariantMode
+        children: NimNode
+template variant(kind: untyped = ident"kind", mode: VariantMode = NonWrapped, children: untyped = newEmptyNode()) {.pragma.}
 template kind {.pragma.}
 
+proc `$`*(self: VariantPragmaArgs): string =
+    fmt"(kind: {self.kind.treeRepr}, mode: {self.mode}, children: {self.children.treeRepr})"
 
 func scanName(name: NimNode): (NimNode, NimNode) =
     name.matchAst:
@@ -115,7 +126,13 @@ proc makeType(name: NimNode, generics: NimNode, fields: seq[NimNode], kinds: seq
             nnkPragmaExpr.newTree(
                 postfix(name, "*"),
                 nnkPragma.newTree(
-                    bindSym"variant"
+                    nnkCall.newTree(
+                        bindSym"variant",
+                        nnkExprEqExpr.newTree(
+                            ident"mode",
+                            bindSym"Wrapped"
+                        )
+                    )
                 )
             ),
             generics,
@@ -484,28 +501,80 @@ proc getTypeImpl2*(n: NimNode): NimNode =
             return
 
 
-    if n.kind == nnkSym: # either an variable or a proc
-        let impl = n.getImpl()
-        if impl.kind in RoutineNodes:
-            return impl.pragma
-        elif impl.kind == nnkIdentDefs and impl[0].kind == nnkPragmaExpr:
-            return impl[0][1]
+
+proc getVariantPragma*(n: NimNode): Option[VariantPragmaArgs] =
+    template searchPragma(pragma: typed, variant: typed): untyped =
+        for p in pragma:
+            if (p.kind == nnkSym and p == variant) or
+                    (p.kind in {nnkExprColonExpr, nnkCall, nnkCallStrLit} and p.len > 0 and p[0].kind == nnkSym and p[0] == variant):
+                var
+                    kind: NimNode
+                    mode: VariantMode
+                    children: NimNode
+                p[1].matchAst:
+                of nnkCallStrLit(nnkSym(strVal = "ident"), `a`@nnkRStrLit):
+                    kind = ident(a.strVal)
+                else:
+                    kind = p[1]
+                if p[2] == bindSym"Wrapped":
+                    mode = Wrapped
+                elif p[2] == bindSym"NonWrapped":
+                    mode = NonWrapped
+                elif p[2] == bindSym"NoCase":
+                    mode = NoCase
+                else:
+                    error "unreachable", p[0]
+                p[3].matchAst:
+                of nnkCallStrLit(nnkSym(strVal = "ident"), `a`@nnkRStrLit):
+                    children = ident(a.strVal)
+                else:
+                    children = p[3]
+                return some VariantPragmaArgs(kind: kind, mode: mode, children: children)
+    let variant = bindSym"variant"
+    var tmp = n.getTypeInst
+    tmp = if tmp.kind == nnkSym:
+        tmp.getImpl
+    else:
+        tmp[0].getImpl
+    while true:
+        tmp.matchAst:
+        of nnkTypeDef(nnkSym, nnkEmpty, `n`@nnkSym):
+            tmp = n.getImpl
+        of nnkTypeDef(nnkSym, nnkGenericParams, `n`@nnkBracketExpr):
+            tmp = n[0].getImpl
+        of nnkTypeDef(nnkSym, nnkEmpty, nnkDistinctTy(`n`@nnkSym)):
+            tmp = n.getImpl
+        of nnkTypeDef(nnkSym, nnkGenericParams, nnkDistinctTy(`n`@nnkBracketExpr)):
+            tmp = n[0].getImpl
+        of nnkTypeDef(nnkSym, nnkEmpty, nnkRefTy(`n`@nnkSym)):
+            tmp = n.getImpl
+        of nnkTypeDef(nnkSym, nnkGenericParams, nnkRefTy(`n`@nnkBracketExpr)):
+            tmp = n[0].getImpl
+        of nnkTypeDef(nnkPragmaExpr(nnkSym, `pragma`@nnkPragma), nnkEmpty, `n`@nnkSym):
+            searchPragma(pragma, variant)
+            tmp = n.getImpl
+        of nnkTypeDef(nnkPragmaExpr(nnkSym, `pragma`@nnkPragma), nnkGenericParams, `n`@nnkBracketExpr):
+            searchPragma(pragma, variant)
+            tmp = n[0].getImpl
+        of nnkTypeDef(nnkPragmaExpr(nnkSym, `pragma`@nnkPragma), nnkEmpty, nnkDistinctTy(`n`@nnkSym)):
+            searchPragma(pragma, variant)
+            tmp = n.getImpl
+        of nnkTypeDef(nnkPragmaExpr(nnkSym, `pragma`@nnkPragma), nnkBracketExpr, nnkDistinctTy(`n`@nnkBracketExpr)):
+            searchPragma(pragma, variant)
+            tmp = n[0].getImpl
+        of nnkTypeDef(nnkPragmaExpr(nnkSym, `pragma`@nnkPragma), nnkEmpty, nnkRefTy(`n`@nnkSym)):
+            searchPragma(pragma, variant)
+            tmp = n.getImpl
+        of nnkTypeDef(nnkPragmaExpr(nnkSym, `pragma`@nnkPragma), nnkGenericParams, nnkRefTy(`n`@nnkBracketExpr)):
+            searchPragma(pragma, variant)
+            tmp = n[0].getImpl
+        of nnkTypeDef(nnkPragmaExpr(nnkSym, `pragma`@nnkPragma), {nnkEmpty, nnkGenericParams}, {nnkObjectTy}):
+            searchPragma(pragma, variant)
+            return none VariantPragmaArgs
         else:
-            typ.matchAst:
-            of nnkSym:
-                typ.getImpl.matchAst:
-                of nnkTypeDef(nnkPragmaExpr(_, `p`@nnkPragma), {nnkGenericParams, nnkEmpty}, {nnkObjectTy, nnkTupleTy, nnkEnumTy}):
-                    return p
-                of nnkTypeDef(_, {nnkGenericParams, nnkEmpty}, {nnkObjectTy, nnkTupleTy, nnkEnumTy}):
-                    return newEmptyNode()
-            of nnkBracketExpr:
-                typ[0].getImpl.matchAst:
-                of nnkTypeDef(nnkPragmaExpr(_, `p`@nnkPragma), {nnkGenericParams, nnkEmpty}, {nnkObjectTy, nnkTupleTy, nnkEnumTy}):
-                    return p
-                of nnkTypeDef(_, {nnkGenericParams, nnkEmpty}, {nnkObjectTy, nnkTupleTy, nnkEnumTy}):
-                    return newEmptyNode()
-            else:
-                discard
+            return none VariantPragmaArgs
+proc hasVariantPragma*(n: NimNode): bool =
+    n.getVariantPragma.isSome
 
             # let timpl = typ.getImpl()
             # if timpl.len>0 and timpl[0].len>1:
@@ -625,7 +694,7 @@ proc matchVariantObject(selector: NimNode, pattern: NimNode): NimNode =
 
 macro `?=`*(pattern: untyped, selector: object): untyped =
     proc impl(selector: NimNode, pattern: NimNode): NimNode =
-        if selector.hasCustomPragma(bindSym"variant"):
+        if selector.hasVariantPragma:
             return selector.matchVariantObject(pattern)
         selector.matchDiscardingPattern(pattern, impl(selector, pattern))
         let fields = toSeq(selector.getTypeImpl[2].children).filterIt(it.kind==nnkIdentDefs).mapIt(it[0].strVal)
