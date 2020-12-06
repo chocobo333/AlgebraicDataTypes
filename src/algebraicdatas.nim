@@ -390,6 +390,8 @@ macro `?=`*(pattern: untyped, selector: AtomType|string): untyped =
         # such as 3, 'a' or "abc"
         of `p`@nnkLiterals:
             result = infix(p, bindSym"==?", selector)
+        of nnkPar(`p`@_):
+            result = infix(p, bindSym"==?", selector)
         of `p`@nnkInfix(ident"..", `a`@_, `b`@_):
             result = newCall("contains", p, selector)
         else:
@@ -646,8 +648,6 @@ func findTag(kinds: seq[NimNode], pattern: NimNode): int =
 proc matchVariantObjectWrapped(selector: NimNode, pattern: NimNode, args: VariantPragmaArgs): NimNode =
     let
         (kinds, kindFields) = selector.scanKinds(args)
-    echo kinds
-    echo kindFields
     pattern.matchAst:
     of {nnkCall, nnkObjConstr} |= pattern[0].kind == nnkIdent:
         let
