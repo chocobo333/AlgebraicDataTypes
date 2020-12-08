@@ -11,5 +11,6 @@ srcDir        = "src"
 
 requires "nim >= 1.4.0"
 requires "ast_pattern_matching"
+requires "macroutils"
 requires "optionsutils"
 requires "hmisc"
