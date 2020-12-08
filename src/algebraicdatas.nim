@@ -6,7 +6,7 @@ import tables
 import options
 
 import macros
-import macroutils except Slice
+import macroutils except Slice, Lit
 import ast_pattern_matching
 import hmisc/hexceptions
 
@@ -19,6 +19,8 @@ import algebraicdatas/[
 
 func enumerate*[T](s: openArray[T]): auto =
     toSeq(0..<s.len).zip(s)
+func enumerate*(s: NimNode): auto =
+    toSeq(0..<s.len).zip(toSeq[s.children])
 
 type
     VariantKind = enum
@@ -30,13 +32,15 @@ type
 template variant {.pragma.}
 
 func defaultDiscriminator: NimNode = ident"kind"
-template implize(n: NimNode): NimNode =
+func implize(n: NimNode): NimNode =
     ident(":" & n.strVal)
-template fieldize(n: NimNode): NimNode =
+func fieldize(n: NimNode): NimNode =
     ident(":" & n.strVal & "Field")
-template kindize(n: NimNode): NimNode =
+func kindize(n: NimNode): NimNode =
     ident(":" & n.strVal & "Kind")
-template newize(n: NimNode): NimNode =
+func argize(n: int): NimNode =
+    ident("arg" & $n)
+func newize(n: NimNode): NimNode =
     ident("new" & n.strVal)
 var
     objectContext {.compileTime.}: ObjectContext = newContext()
@@ -203,10 +207,39 @@ func makeProc(name, generics, formalParams, body: NimNode): NimNode =
         body
     )
 func makeConstructor(name: NimNode, generics: NimNode, fields: seq[NimNode], kinds: seq[(NimNode, VariantKind, seq[NimNode])]): seq[NimNode] =
+    func makeParameters(fields: seq[NimNode], kind: VariantKind): seq[NimNode] =
+        case kind
+        of Untagged:
+            fields.enumerate.mapIt newIdentDefs(it[0].argize, it[1])
+        else:
+            fields
+    func makeObjConstr(cons: NimNode, name: NimNode, generics: NimNode, fields: seq[NimNode], kindId: NimNode, kind: VariantKind): NimNode =
+        case kind
+        of Tagged:
+            makeVariantObjConstr(name, generics, newDotExpr(kindId, cons)).add(
+                newColonExpr(
+                    cons.fieldize,
+                    nnkTupleConstr.newTree(
+                        fields.mapIt(newColonExpr(it[0], it[0]))
+                    )
+                )
+            )
+        of Untagged:
+            makeVariantObjConstr(name, generics, newDotExpr(kindId, cons)).add(
+                newColonExpr(
+                    cons.fieldize,
+                    nnkTupleConstr.newTree(
+                        fields.enumerate.mapIt it[0].argize
+                    )
+                )
+            )
+        of NoField:
+            makeVariantObjConstr(name, generics, newDotExpr(kindId, cons))
     let
         kindId = name.kindize
+        val = ident":val"
     result.add makeProc(
-        ident(fmt"new{name.strVal}"),
+        name.newize,
         generics,
         nnkFormalParams.newTree(
             name.generalize(generics)
@@ -214,12 +247,7 @@ func makeConstructor(name: NimNode, generics: NimNode, fields: seq[NimNode], kin
         newStmtList(
             nnkObjConstr.newTree(
                 name.generalize(generics),
-            ).add fields.mapIt(
-                newColonExpr(
-                    it[0],
-                    it[0]
-                )
-            )
+            ).add fields.mapIt(newColonExpr(it[0], it[0]))
         )
     )
     result.add kinds.mapIt(
@@ -229,40 +257,14 @@ func makeConstructor(name: NimNode, generics: NimNode, fields: seq[NimNode], kin
             nnkFormalParams.newTree(
                 name.generalize(generics),
                 newIdentDefs(
-                    ident":val",
+                    val,
                     name.generalize(generics)
                 )
-            ).add(
-                case it[1]
-                of Untagged:
-                    it[2].enumerate.mapIt newIdentDefs(ident(fmt"a{it[0]}"), it[1])
-                else:
-                    it[2]
-            ),
+            ).add(it[2].makeParameters(it[1])),
             newStmtList(
-                newAssignment(ident"result", ident":val")
-            ).add(
-                case it[1]
-                    of Tagged:
-                        some newAssignment(
-                            ident"result".newDotExpr(it[0].fieldize),
-                            nnkObjConstr.newTree(
-                                it[0].implize.generalize(generics)
-                            ).add(
-                                it[2].mapIt(
-                                    newColonExpr(it[0], it[0])
-                                )
-                            )
-                        )
-                    of Untagged:
-                        some newAssignment(
-                            ident"result".newDotExpr(it[0].fieldize),
-                            nnkTupleConstr.newTree(
-                                it[2].enumerate.mapIt ident(fmt"a{it[0]}")
-                            )
-                        )
-                    of NoField:
-                        none NimNode
+                makeObjConstr(it[0], name, generics, it[2], kindId, it[1]).add(
+                    fields.mapIt(newColonExpr(it[0], DotExpr(val, it[0])))
+                )
             )
         )
     )
@@ -279,38 +281,8 @@ func makeConstructor(name: NimNode, generics: NimNode, fields: seq[NimNode], kin
                         name.generalize(generics)
                     )
                 )
-            ).add(
-                case it[1]
-                of Untagged:
-                    it[2].enumerate.mapIt newIdentDefs(ident(fmt"a{it[0]}"), it[1])
-                else:
-                    it[2]
-            ),
-            newStmtList(
-                case it[1]
-                of Tagged:
-                    makeVariantObjConstr(name, generics, newDotExpr(kindId, ident(it[0].strVal))).add(
-                        newColonExpr(
-                            it[0].fieldize,
-                            nnkTupleConstr.newTree(
-                                it[2].mapIt(
-                                    newColonExpr(it[0], it[0])
-                                )
-                            )
-                        )
-                    )
-                of Untagged:
-                    makeVariantObjConstr(name, generics, newDotExpr(kindId, ident(it[0].strVal))).add(
-                        newColonExpr(
-                            it[0].fieldize,
-                            nnkTupleConstr.newTree(
-                                it[2].enumerate.mapIt ident(fmt"a{it[0]}")
-                            )
-                        )
-                    )
-                of NoField:
-                    makeVariantObjConstr(name, generics, newDotExpr(kindId, ident(it[0].strVal)))
-            )
+            ).add(it[2].makeParameters(it[1])),
+            newStmtList(makeObjConstr(it[0], name, generics, it[2], kindId, it[1]))
         )
     )
 
@@ -390,7 +362,7 @@ macro `?=`*(pattern: untyped, selector: AtomType|string): untyped =
             return Infix(bindSym"==?", p, selector)
         # range pattern
         of `p`@nnkInfix(ident"..", `a`@_, `b`@_):
-            return newCall("contains", p, selector)
+            return Call("contains", p, selector)
         else:
             error "invlid pattern", pattern
     selector.impl(pattern)
@@ -398,7 +370,7 @@ macro `?=`*(pattern: untyped, selector: AtomType|string): untyped =
 func scanTupleInfo(selector: NimNode): (NimNodeKind, int, seq[string]) =
     let a = selector.getTypeImpl
     if a.kind == nnkTupleTy:
-        (a.kind, a.len, toSeq(a.children).mapIt(it[0].strVal))
+        (a.kind, a.len, a.mapIt(it[0].strVal))
     elif a.kind == nnkTupleConstr:
         (a.kind, a.len, @[])
     else:
@@ -413,7 +385,7 @@ proc mathcTupleConstr(selector: NimNode, pattern: NimNode, tupleLen: int): NimNo
         # TODO: use exactly match now
         #       support shorter pattern
         p.expectLen(tupleLen)
-        result = toSeq(p.children).enumerate.mapIt(
+        result = p.enumerate.mapIt(
             Infix("?=", it[1], selector.newIndex(it[0]))
         ).foldl(a and b)
     else:
@@ -461,7 +433,7 @@ func matchTupleTy(selector: NimNode, pattern: NimNode, tupleFields: seq[string])
     pattern.matchAst:
     of `p`@nnkPar:
         var usedFields: seq[string]
-        result = toSeq(p.children).mapIt(
+        result = p.mapIt(
             selector.matchTupleField(it, tupleFields, usedFields)
         ).foldl(a and b)
     else:
@@ -758,7 +730,7 @@ proc newSpace(selector: NimNode, pattern: NimNode, used: seq[string] = @[]): Spa
     of nnkPar:
         typ.matchAst:
         of nnkTupleConstr:
-            let args = toSeq(typ.children).zip(toSeq(pattern.children)).mapIt(
+            let args = toSeq(typ).zip(toSeq(pattern)).mapIt(
                 block:
                     let res = it[0].newSpace(it[1], used)
                     if it[1].kind == nnkIdent and it[1].strVal != "_" and it[1].strVal notin used:
@@ -827,7 +799,7 @@ proc ifVerify(ifStmt: NimNode, selector: NimNode, body: seq[NimNode], orgSelecto
         #     s
         # )
         return s
-    let tmp = toSeq(ifStmt.children).enumerate.filterIt(it[1].kind == nnkElse)
+    let tmp = ifStmt.enumerate.filterIt(it[1].kind == nnkElse)
     if tmp.len > 1 or tmp.len == 1 and tmp[0][0] != ifStmt.len - 1:
         error "redundant pattern", body[tmp[0][0] + 1]
     
@@ -930,4 +902,6 @@ template optOr*{a or true}(a: bool{noSideEffect}): bool = true
 template otpOr*{false or a}(a: bool): bool = a
 template otpOr*{a or false}(a: bool): bool = a
 
+
+{.experimental: "caseStmtMacros".}
 
