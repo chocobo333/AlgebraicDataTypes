@@ -6,7 +6,7 @@ import algebraicdatas
 
 {.experimental: "caseStmtMacros".}
 
-suite "Int":
+suite "named tuple":
     type IntTuple = tuple
         a: int
         b: int
