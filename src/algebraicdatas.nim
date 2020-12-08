@@ -867,7 +867,7 @@ macro matchImpl*(selector: typed, orgSelector: typed, body: varargs[untyped]): u
             )
         of nnkOfBranch(nnkInfix(nnkIdent(strVal="and"), `p`@_,  `cond`@_), `body`@nnkStmtList):
             result = nnkElifBranch.newTree(
-                Infix("and", Infix("?=", `p`, selector), cond),
+                Infix("?=", `p`, selector) and cond,
                 body
             )
         # pattern mathing
