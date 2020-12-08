@@ -83,7 +83,6 @@ suite "named tuple":
             # of (a: 1, b: 2, c: int.low..int.high):
             #     flag = false
         
-        # check exaustive
         # check (not flag)
 
     # test "dead code":
@@ -134,21 +133,21 @@ suite "named tuple (Exp)":
 
         check x == 4
     
-    # test "variable":
-    #     var
-    #         x = case IntTuple
-    #         of (a: x, b: 2, c: z):
-    #             0
-    #         of (a: x, b: y, c: 2):
-    #             1
-    #         of (a: x, b: 2, c: z):
-    #             2
-    #         of (a: x, b: y, c: z):
-    #             3
-    #         of _:
-    #             4
+    test "variable":
+        var
+            x = case intTuple
+            of (a: x, b: 2, c: x):
+                0
+            of (a: x, b: y, c: 2):
+                1
+            of (a: x, b: 2, c: z):
+                2
+            of (a: x, b: y, c: z):
+                3
+            of _:
+                4
         
-    #     check x = 2
+        check x == 2
 
     test "exaustive":
         const flag = compiles:
