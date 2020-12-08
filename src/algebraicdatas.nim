@@ -6,8 +6,15 @@ import tables
 import options
 
 import macros
-import macroutils
+import macroutils except Slice
 import ast_pattern_matching
+import hmisc/hexceptions
+
+import algebraicdatas/[
+    utils,
+    contexts,
+    spaces
+]
 
 
 func enumerate*[T](s: openArray[T]): auto =
@@ -20,20 +27,37 @@ type
         Untagged
     MatchError = object of ValueError
 
-type
-    VariantMode = enum
-        Wrapped
-        NonWrapped
-        NoCase
-    VariantPragmaArgs = object
-        kind:NimNode
-        mode: VariantMode
-        children: NimNode
-template variant(kind: untyped = ident"kind", mode: VariantMode = NonWrapped, children: untyped = newEmptyNode()) {.pragma.}
-template kind {.pragma.}
+template variant {.pragma.}
 
-proc `$`*(self: VariantPragmaArgs): string =
-    fmt"(kind: {self.kind.treeRepr}, mode: {self.mode}, children: {self.children.treeRepr})"
+func defaultDiscriminator: NimNode = ident"kind"
+template implize(n: NimNode): NimNode =
+    ident(":" & n.strVal)
+template fieldize(n: NimNode): NimNode =
+    ident(":" & n.strVal & "Field")
+template kindize(n: NimNode): NimNode =
+    ident(":" & n.strVal & "Kind")
+template newize(n: NimNode): NimNode =
+    ident("new" & n.strVal)
+var
+    objectContext {.compileTime.}: ObjectContext = newContext()
+
+proc VariantImpl(typ: NimNode, kind: NimNode, getter: NimNode, children: NimNode): NimNode =
+    echo 3
+    newStmtList()
+macro Variant*(typ: typed, kind: untyped, getter: typed, children: untyped): untyped =
+    kind.expectKind({nnkIdent, nnkSym, nnkStrLit})
+    children.expectKind({nnkIdent, nnkSym, nnkStrLit})
+    VariantImpl(typ, kind, getter, children)
+
+macro Variant*(typ: typed, kind: untyped, getter: typed): untyped =
+    kind.expectKind({nnkIdent, nnkSym, nnkStrLit})
+    VariantImpl(typ, kind, getter, newEmptyNode())
+
+macro Variant*(typ: typed, kind: untyped): untyped =
+    kind.expectKind({nnkIdent, nnkSym, nnkStrLit})
+    VariantImpl(typ, kind, newEmptyNode(), newEmptyNode())
+macro Variant*(typ: typed): untyped =
+    VariantImpl(typ, newEmptyNode(), newEmptyNode(), newEmptyNode())
 
 func scanName(name: NimNode): (NimNode, NimNode) =
     name.matchAst:
@@ -82,37 +106,35 @@ func scanFields(body: NimNode): (seq[NimNode], seq[(NimNode, VariantKind, seq[Ni
             kinds.add kind
     (fields, kinds)
 
-proc makeType(name: NimNode, generics: NimNode, fields: seq[NimNode], kinds: seq[(NimNode, VariantKind, seq[NimNode])]): NimNode =
-    func generalize(id: NimNode, generics: NimNode): NimNode =
-        if generics.kind == nnkEmpty:
-            return id
-        generics.expectKind(nnkGenericParams)
-        # id, @[T1: SomeInteger, T2: SomeFloat] -> id[T1, T2]
-        nnkBracketExpr.newTree(id).add(
-            generics.mapIt(
-                block:
-                    it.expectKind(nnkIdentDefs);
-                    it[0]
-            )
+func generalize(id: NimNode, generics: NimNode): NimNode =
+    generics.expectKind({nnkEmpty, nnkGenericParams})
+    if generics.kind == nnkEmpty:
+        return id
+    generics.expectKind(nnkGenericParams)
+    # id, @[T1: SomeInteger, T2: SomeFloat] -> id[T1, T2]
+    nnkBracketExpr.newTree(id).add(
+        generics.mapIt(
+            block:
+                it.expectKind(nnkIdentDefs);
+                it[0]
         )
+    )
+
+func makeType(name: NimNode, generics: NimNode, fields: seq[NimNode], kinds: seq[(NimNode, VariantKind, seq[NimNode])]): NimNode =
     name.expectKind(nnkIdent)
     result = nnkTypeSection.newNimNode()
     let
         genericParams = generics.mapIt(it)
-        kindId = ident(fmt"{name}kind")
+        kindId = name.kindize
         kind = newEnum(kindId, kinds.mapIt(it[0]), true, true)[0]
         impls = kinds.filterIt(it[1] != NoField).mapIt(
             nnkTypeDef.newTree(
-                postfix(ident(fmt"{it[0]}Impl"), "*"),
+                postfix(it[0].implize, "*"),
                 generics,
                 case it[1]
                 of Tagged:
-                    nnkObjectTy.newTree(
-                        newEmptyNode(),
-                        newEmptyNode(),
-                        nnkRecList.newTree(
-                            it[2].mapIt(newIdentDefs(postfix(it[0], "*"), it[1]))
-                        )
+                    nnkTupleTy.newTree(
+                        it[2].mapIt(newIdentDefs(it[0], it[1]))
                     )
                 of Untagged:
                     nnkTupleConstr.newTree(
@@ -126,13 +148,7 @@ proc makeType(name: NimNode, generics: NimNode, fields: seq[NimNode], kinds: seq
             nnkPragmaExpr.newTree(
                 postfix(name, "*"),
                 nnkPragma.newTree(
-                    nnkCall.newTree(
-                        bindSym"variant",
-                        nnkExprEqExpr.newTree(
-                            ident"mode",
-                            bindSym"Wrapped"
-                        )
-                    )
+                    bindSym"variant",
                 )
             ),
             generics,
@@ -141,7 +157,7 @@ proc makeType(name: NimNode, generics: NimNode, fields: seq[NimNode], kinds: seq
                 newEmptyNode(),
                 nnkRecList.newTree(fields.mapIt(newIdentDefs(postfix(it[0], "*"), it[1]))).add(
                     nnkRecCase.newTree(
-                        newIdentDefs(postfix(ident"kind", "*"), kindId)
+                        newIdentDefs(postfix(defaultDiscriminator(), "*"), kindId)
                     ).add kinds.mapIt(
                         nnkOfBranch.newTree(
                             newDotExpr(kindId, it[0]),
@@ -151,8 +167,8 @@ proc makeType(name: NimNode, generics: NimNode, fields: seq[NimNode], kinds: seq
                                     newNilLit()
                                 else:
                                     newIdentDefs(
-                                        postfix(ident(fmt"{it[0]}Field"), "*"),
-                                        ident(fmt"{it[0]}Impl").generalize(generics)
+                                        postfix(it[0].fieldize, "*"),
+                                        it[0].implize.generalize(generics)
                                     )
                             )
                         )
@@ -164,30 +180,37 @@ proc makeType(name: NimNode, generics: NimNode, fields: seq[NimNode], kinds: seq
     result.add impls
     result.add variant
 
-func makeConstructor(name: NimNode, generics: NimNode, fields: seq[NimNode], kinds: seq[(NimNode, VariantKind, seq[NimNode])]): seq[NimNode] =
-    func generalize(id: NimNode, generics: NimNode): NimNode =
-        if generics.kind == nnkEmpty:
-            return id
-        generics.expectKind(nnkGenericParams)
-        # id, @[T1: SomeInteger, T2: SomeFloat] -> id[T1, T2]
-        nnkBracketExpr.newTree(id).add(
-            generics.mapIt(
-                block:
-                    it.expectKind(nnkIdentDefs);
-                    it[0]
-            )
+macro makeTuple(values: varargs[untyped]): untyped =
+    nnkTupleConstr.newTree(values)
+
+func makeVariantObjConstr(name: NimNode, generics: NimNode, kind: NimNode): NimNode =
+    name.expectKind(nnkIdent)
+    nnkObjConstr.newTree(
+        name.generalize(generics),
+        newColonExpr(
+            defaultDiscriminator(),
+            kind
         )
-    let
-        kindId = ident(fmt"{name.strVal}Kind")
-    result.add nnkProcDef.newTree(
-        postfix(ident(fmt"new{name.strVal}"), "*"),
+    )
+func makeProc(name, generics, formalParams, body: NimNode): NimNode =
+    nnkProcDef.newTree(
+        postfix(name, "*"),
         newEmptyNode(),
+        generics,
+        formalParams,
+        newEmptyNode(),
+        newEmptyNode(),
+        body
+    )
+func makeConstructor(name: NimNode, generics: NimNode, fields: seq[NimNode], kinds: seq[(NimNode, VariantKind, seq[NimNode])]): seq[NimNode] =
+    let
+        kindId = name.kindize
+    result.add makeProc(
+        ident(fmt"new{name.strVal}"),
         generics,
         nnkFormalParams.newTree(
             name.generalize(generics)
         ).add(fields),
-        newEmptyNode(),
-        newEmptyNode(),
         newStmtList(
             nnkObjConstr.newTree(
                 name.generalize(generics),
@@ -200,9 +223,8 @@ func makeConstructor(name: NimNode, generics: NimNode, fields: seq[NimNode], kin
         )
     )
     result.add kinds.mapIt(
-        nnkProcDef.newTree(
-            postfix(it[0], "*"),
-            newEmptyNode(),
+        makeProc(
+            it[0],
             generics,
             nnkFormalParams.newTree(
                 name.generalize(generics),
@@ -217,39 +239,36 @@ func makeConstructor(name: NimNode, generics: NimNode, fields: seq[NimNode], kin
                 else:
                     it[2]
             ),
-            newEmptyNode(),
-            newEmptyNode(),
             newStmtList(
                 newAssignment(ident"result", ident":val")
             ).add(
                 case it[1]
                     of Tagged:
-                        @[newAssignment(
-                            ident"result".newDotExpr(ident(fmt"{it[0].strVal}Field")),
+                        some newAssignment(
+                            ident"result".newDotExpr(it[0].fieldize),
                             nnkObjConstr.newTree(
-                                ident(fmt"{it[0].strVal}Impl").generalize(generics)
+                                it[0].implize.generalize(generics)
                             ).add(
                                 it[2].mapIt(
                                     newColonExpr(it[0], it[0])
                                 )
                             )
-                        )]
+                        )
                     of Untagged:
-                        @[newAssignment(
-                            ident"result".newDotExpr(ident(fmt"{it[0].strVal}Field")),
+                        some newAssignment(
+                            ident"result".newDotExpr(it[0].fieldize),
                             nnkTupleConstr.newTree(
                                 it[2].enumerate.mapIt ident(fmt"a{it[0]}")
                             )
-                        )]
+                        )
                     of NoField:
-                        @[]
+                        none NimNode
             )
         )
     )
     result.add kinds.mapIt(
-        nnkProcDef.newTree(
-            postfix(it[0], "*"),
-            newEmptyNode(),
+        makeProc(
+            it[0],
             generics,
             nnkFormalParams.newTree(
                 name.generalize(generics),
@@ -267,41 +286,30 @@ func makeConstructor(name: NimNode, generics: NimNode, fields: seq[NimNode], kin
                 else:
                     it[2]
             ),
-            newEmptyNode(),
-            newEmptyNode(),
             newStmtList(
-                nnkObjConstr.newTree(
-                    name.generalize(generics),
-                    newColonExpr(
-                        ident"kind",
-                        newDotExpr(
-                            kindId,
-                            ident(it[0].strVal),
-                        )
-                    )
-                ).add(
-                    case it[1]
-                    of Tagged:
-                        @[newColonExpr(
-                            ident(fmt"{it[0].strVal}Field"),
-                            nnkObjConstr.newTree(
-                                ident(fmt"{it[0].strVal}Impl").generalize(generics)
-                            ).add(
+                case it[1]
+                of Tagged:
+                    makeVariantObjConstr(name, generics, newDotExpr(kindId, ident(it[0].strVal))).add(
+                        newColonExpr(
+                            it[0].fieldize,
+                            nnkTupleConstr.newTree(
                                 it[2].mapIt(
                                     newColonExpr(it[0], it[0])
                                 )
                             )
-                        )]
-                    of Untagged:
-                        @[newColonExpr(
-                            ident(fmt"{it[0].strVal}Field"),
+                        )
+                    )
+                of Untagged:
+                    makeVariantObjConstr(name, generics, newDotExpr(kindId, ident(it[0].strVal))).add(
+                        newColonExpr(
+                            it[0].fieldize,
                             nnkTupleConstr.newTree(
                                 it[2].enumerate.mapIt ident(fmt"a{it[0]}")
                             )
-                        )]
-                    of NoField:
-                        @[]
-                )
+                        )
+                    )
+                of NoField:
+                    makeVariantObjConstr(name, generics, newDotExpr(kindId, ident(it[0].strVal)))
             )
         )
     )
@@ -313,19 +321,6 @@ macro Algebraic*(name: untyped, body: untyped): untyped =
     result = newStmtList()
     result.add makeType(name, generics, fields, kinds)
     result.add makeConstructor(name, generics, fields, kinds)
-
-macro error2(msg: static[string], n: untyped): untyped =
-    ## macro version of `error` in macros
-    ## This is useful for use in template
-    error msg, n
-macro hint2(msg: static[string], n: untyped): untyped =
-    ## macro version of `hint` in macros
-    ## This is useful for use in template
-    hint msg, n
-macro warning2(msg: static[string], n: untyped): untyped =
-    ## macro version of `warning` in macros
-    ## This is useful for use in template
-    warning msg, n
 
 template `==?`(a, b: untyped): untyped =
     when compiles(a.contains(b)):
@@ -364,21 +359,21 @@ template matchDiscardingPattern(selector: NimNode, pattern: NimNode, inductive: 
     # discarding the value
     # _
     of nnkIdent(strVal = "_"):
-        return newBoolLitNode(true)
+        return newLit(true)
     # capturing or comparing to an already captured variable
     # name
     of `p`@nnkIdent:
-        return infix(p, bindSym":==", selector)
+        return Infix(bindSym":==", p, selector)
     # captruing, never comparing
     # name@_
     of nnkInfix(ident"@", `id`@nnkIdent, nnkIdent(strVal = "_")):
-        return infix(id, bindSym":=", selector)
+        return Infix(bindSym":=", id, selector)
     # mathing and capturing
     # name@pat
     of nnkInfix(ident"@", `id`@nnkIdent, `p`@_):
-        return infix(inductive, "and", infix(id, bindSym":=", selector))
+        return inductive and Infix(bindSym":=", id, selector)
     of nnkPrefix(ident"!", `id`@nnkIdent):
-        return infix(id, bindSym"==?", selector)
+        return Infix(bindSym"==?", id, selector)
     else:
         discard
 
@@ -389,11 +384,13 @@ macro `?=`*(pattern: untyped, selector: AtomType|string): untyped =
         # match with literals: strict pattern
         # such as 3, 'a' or "abc"
         of `p`@nnkLiterals:
-            result = infix(p, bindSym"==?", selector)
+            return Infix(bindSym"==?", p, selector)
+        # expression pattern
         of nnkPar(`p`@_):
-            result = infix(p, bindSym"==?", selector)
+            return Infix(bindSym"==?", p, selector)
+        # range pattern
         of `p`@nnkInfix(ident"..", `a`@_, `b`@_):
-            result = newCall("contains", p, selector)
+            return newCall("contains", p, selector)
         else:
             error "invlid pattern", pattern
     selector.impl(pattern)
@@ -417,8 +414,8 @@ proc mathcTupleConstr(selector: NimNode, pattern: NimNode, tupleLen: int): NimNo
         #       support shorter pattern
         p.expectLen(tupleLen)
         result = toSeq(p.children).enumerate.mapIt(
-            infix(it[1], "?=", selector.newIndex(it[0]))
-        ).foldl(infix(a, "and", b))
+            Infix("?=", it[1], selector.newIndex(it[0]))
+        ).foldl(a and b)
     else:
         error "invalid pattern", pattern
 
@@ -438,7 +435,7 @@ func matchTupleField(selector: NimNode, pattern: NimNode, tupleFields: seq[strin
         else:
             discard
         usedFields.add field.strVal
-        result = infix(p, "?=", newDotExpr(selector, field))
+        return Infix("?=", p, newDotExpr(selector, field))
     of `field`@nnkIdent:
         if field.strVal notin tupleFields:
             error(
@@ -450,7 +447,7 @@ func matchTupleField(selector: NimNode, pattern: NimNode, tupleFields: seq[strin
         if field.strVal in usedFields:
             error "this field has already appeared in patten: " & field.strVal, field
         usedFields.add field.strVal
-        result = infix(field, bindSym":=", newDotExpr(selector, field))
+        return Infix(bindSym":=", field, newDotExpr(selector, field))
     else:
         error(
                 tupleFields.filterIt(it notin usedFields).mapIt(
@@ -466,7 +463,7 @@ func matchTupleTy(selector: NimNode, pattern: NimNode, tupleFields: seq[string])
         var usedFields: seq[string]
         result = toSeq(p.children).mapIt(
             selector.matchTupleField(it, tupleFields, usedFields)
-        ).foldl(infix(a, "and", b))
+        ).foldl(a and b)
     else:
         error "invalid pattern", pattern
 
@@ -485,7 +482,32 @@ macro `?=`*(pattern: untyped, selector: tuple): untyped =
             error "unreachable", selector
     selector.impl(pattern)
 
-proc getTypeImpl2*(n: NimNode): NimNode =
+func getTypeSym*(n: NimNode): NimNode =
+    n.getTypeInst.matchAst:
+    of `t`@nnkSym:
+        result = t
+    of `t`@nnkBracketExpr:
+        result = t[0]
+    else:
+        error "notimplemented", n
+
+func getSymHash(n: NimNode): string =
+    n.matchAst:
+    of `t`@nnkSym:
+        result = t.signatureHash
+    of `t`@nnkBracketExpr:
+        result = t.mapIt(it.signatureHash).foldr(a & b)
+    else:
+        error "notimplemented", n
+func getTypeHash*(n: NimNode): string =
+    n.getTypeInst.matchAst:
+    of `t`@nnkSym:
+        result = t.signatureHash
+    of `t`@nnkBracketExpr:
+        result = t.mapIt(it.getSymHash).foldr(a & b)
+
+
+func getTypeImpl2*(n: NimNode): NimNode =
     result = n.getTypeInst
     result = if result.kind == nnkSym:
         result.getImpl
@@ -502,34 +524,12 @@ proc getTypeImpl2*(n: NimNode): NimNode =
         else:
             return
 
-proc getVariantPragma*(n: NimNode): Option[VariantPragmaArgs] =
+func hasVariantPragma*(n: NimNode): bool =
     template searchPragma(pragma: typed, variant: typed): untyped =
         for p in pragma:
             if (p.kind == nnkSym and p == variant) or
                     (p.kind in {nnkExprColonExpr, nnkCall, nnkCallStrLit} and p.len > 0 and p[0].kind == nnkSym and p[0] == variant):
-                var
-                    kind: NimNode
-                    mode: VariantMode
-                    children: NimNode
-                p[1].matchAst:
-                of nnkCallStrLit(nnkSym(strVal = "ident"), `a`@nnkRStrLit):
-                    kind = ident(a.strVal)
-                else:
-                    kind = p[1]
-                if p[2] == bindSym"Wrapped":
-                    mode = Wrapped
-                elif p[2] == bindSym"NonWrapped":
-                    mode = NonWrapped
-                elif p[2] == bindSym"NoCase":
-                    mode = NoCase
-                else:
-                    error "unreachable", p[0]
-                p[3].matchAst:
-                of nnkCallStrLit(nnkSym(strVal = "ident"), `a`@nnkRStrLit):
-                    children = ident(a.strVal)
-                else:
-                    children = p[3]
-                return some VariantPragmaArgs(kind: kind, mode: mode, children: children)
+                return true
     let variant = bindSym"variant"
     var tmp = n.getTypeInst
     tmp = if tmp.kind == nnkSym:
@@ -570,11 +570,16 @@ proc getVariantPragma*(n: NimNode): Option[VariantPragmaArgs] =
             tmp = n[0].getImpl
         of nnkTypeDef(nnkPragmaExpr(nnkSym, `pragma`@nnkPragma), {nnkEmpty, nnkGenericParams}, {nnkObjectTy}):
             searchPragma(pragma, variant)
-            return none VariantPragmaArgs
+            return false
         else:
-            return none VariantPragmaArgs
-proc hasVariantPragma*(n: NimNode): bool =
-    n.getVariantPragma.isSome
+            return false
+
+func st2ts2[T, U](a: seq[(T, U)]): (seq[T], seq[U]) =
+    ## converts Seq of Tuple to Tuple of Seq
+    (a.mapIt(it[0]), a.mapIt(it[1]))
+func st2ts3[T, U, V](a: seq[(T, U, V)]): (seq[T], seq[U], seq[V]) =
+    ## converts Seq of Tuple to Tuple of Seq
+    (a.mapIt(it[0]), a.mapIt(it[1]), a.mapIt(it[2]))
 
 func getEnumFieldAndIntValue(enumSym: NimNode): seq[(NimNode, BiggestInt)] =
     enumSym.expectKind(nnkSym)
@@ -591,125 +596,267 @@ func getEnumFieldAndIntValue(enumSym: NimNode): seq[(NimNode, BiggestInt)] =
         else:
             error "unreachable", e
 
-func getFieldsFromRecList(reclist: NimNode): seq[NimNode] =
+func getFieldsFromRecList(reclist: NimNode): (seq[NimNode], seq[NimNode]) =
     reclist.expectKind(nnkRecList)
     reclist.mapIt(
         block:
             it.expectKind(nnkIdentDefs)
-            it[0]
-    )
+            (it[0], it[1])
+    ).st2ts2
 
-func getFieldsFromRecCase(reccase: NimNode): seq[(BiggestInt, seq[NimNode])] =
-    func getFieldsFromOfBranch(branch: NimNode): (BiggestInt, seq[NimNode]) =
-        branch.expectKind({nnkOfBranch, nnkElse})
-        branch.matchAst:
-        of nnkOfBranch(`i`@nnkIntLit, `reclist`@nnkRecList):
-            return (i.intVal, reclist.getFieldsFromRecList)
-        of nnkElse(`reclist`@nnkRecList):
-            return (BiggestInt -1, reclist.getFieldsFromRecList)
-        else:
-            error "unreachable", branch
-    reccase.expectKind(nnkRecCase)
-    reccase[1..^1].mapIt(
-        it.getFieldsFromOfBranch()
-    )
+func getFieldsFromOfBranch(branch: NimNode): (BiggestInt, seq[NimNode], seq[NimNode]) =
+    branch.expectKind({nnkOfBranch, nnkElse})
+    branch.matchAst:
+    of nnkOfBranch(`i`@nnkIntLit, `reclist`@nnkRecList):
+        let tmp = reclist.getFieldsFromRecList
+        return (i.intVal, tmp[0], tmp[1])
+    of nnkElse(`reclist`@nnkRecList):
+        let tmp = reclist.getFieldsFromRecList
+        return (BiggestInt -1, tmp[0], tmp[1])
+    else:
+        error "unreachable", branch
 
-func st2ts[T, U](a: seq[(T, U)]): (seq[T], seq[U]) =
-    ## converts Seq of Tuple to Tuple of Seq
-    (a.mapIt(it[0]), a.mapIt(it[1]))
-
-proc scanKinds(selector: NimNode, args: VariantPragmaArgs): (seq[NimNode], seq[seq[NimNode]]) =
+proc getRecListFields(selector: NimNode): (seq[NimNode], seq[seq[NimNode]], seq[seq[NimNode]]) =
+    let
+        reclist = selector.getTypeImpl[2]
+        typ = selector.getTypeSym
+        tmp = reclist.getFieldsFromRecList
+    (@[typ], @[tmp[0]], @[tmp[1]])
+proc getRecCaseFields(selector: NimNode, kind: NimNode): (seq[NimNode], seq[seq[NimNode]], seq[seq[NimNode]]) =
+    func impl(reccase: NimNode): auto =
+        reccase.expectKind(nnkRecCase)
+        reccase[1..^1].mapIt(
+            it.getFieldsFromOfBranch()
+        )
     let
         reclist = selector.getTypeImpl[2]
     for e in reclist:
         if e.kind == nnkRecCase:
             e[0].matchAst:
-            of  nnkIdentDefs(nnkSym(strVal = args.kind.strVal), `sym`@nnkSym, nnkEmpty):
+            of  nnkIdentDefs(nnkSym(strVal = kind.strVal), `sym`@nnkSym, nnkEmpty):
                 let
                     kinds = getEnumFieldAndIntValue(sym)
-                    (fieldsInd, fields) = getFieldsFromRecCase(e).st2ts
+                    (fieldsInd, fields, types) = impl(e).st2ts3
                     elseBInd = fieldsInd.find(-1)
                 result = kinds.mapIt(
                     block:
                         let
                             ind = fieldsInd.find(it[1])
                             i = if ind == -1: elseBInd else: ind
-                        (it[0], fields[i])
-                ).st2ts
+                        (it[0], fields[i], types[i])
+                ).st2ts3
             else:
                 error "unreachable", e[0]
+
+func getKindType*(selector: NimNode, kind: NimNode): NimNode =
+    let
+        reclist = selector.getTypeImpl[2]
+    for e in reclist:
+        if e.kind == nnkRecCase:
+            e[0].matchAst:
+            of  nnkIdentDefs(nnkSym(strVal = kind.strVal), `sym`@nnkSym, nnkEmpty):
+                return sym
+            else:
+                error "unreachable", e[0]
+
 
 func findTag(kinds: seq[NimNode], pattern: NimNode): int =
     result = kinds.mapIt(it.strVal).find(pattern.strVal)
     if result == -1:
         let tmp = kinds[0..^2].mapIt(it.strVal).join(", ") & &" or {kinds[^1].strVal}"
-        error "invalid descriminator\nYou can use " & tmp, pattern
+        error "invalid discriminator\nYou can use " & tmp, pattern
 
-proc matchVariantObjectWrapped(selector: NimNode, pattern: NimNode, args: VariantPragmaArgs): NimNode =
-    let
-        (kinds, kindFields) = selector.scanKinds(args)
-    pattern.matchAst:
-    of {nnkCall, nnkObjConstr} |= pattern[0].kind == nnkIdent:
-        let
-            id = pattern[0]
-            i = kinds.findTag(id)
-            patterns = if pattern.len > 1: pattern[1..^1] else: @[]
-        if i == -1:
-            error "You can use one of " & $kinds.mapIt(it.strVal), pattern
-        if kindFields[i] == @[]:
-            error &"It has no fields\nYou can simply use the pattern `{kinds[i].strVal}`", pattern
-        return infix(infix(selector.newDotExpr(args.kind), "==", kinds[i]), "and", infix(nnkPar.newTree(patterns), "?=", selector.newDotExpr(kindFields[i][0])))
-    of nnkIdent:
-        let
-            i = kinds.findTag(pattern)
-        if kindFields[i] != @[]:
-            error &"It has field(s)\nYou must use `{kinds[i].strVal}(subpatterns)`", pattern
-        return infix(selector.newDotExpr(args.kind), "==", kinds[i])
+func objectInfoFromObject(selector: NimNode): ObjectInfo =
+    if selector.hasVariantPragma:
+        ObjectInfo(kind: defaultDiscriminator(), kindType: selector.getKindType(defaultDiscriminator()), mode: Wrapped, fields: selector.getRecCaseFields(defaultDiscriminator()))
     else:
-        error "invalid pattern", pattern
+        ObjectInfo(mode: NoVariant, fields: selector.getRecListFields)
 
-proc matchVariantObjectNonWrapped(selector: NimNode, pattern: NimNode, args: VariantPragmaArgs): NimNode =
-    echo pattern.treeRepr
+func matchVariantObject(selector: NimNode, pattern: NimNode, objectInfo: ObjectInfo): NimNode =
+    selector.matchDiscardingPattern(pattern, matchVariantObject(selector, pattern, objectInfo))
     let
-        (kinds, kindFields) = selector.scanKinds(args)
-    pattern.matchAst:
-    of {nnkCall, nnkObjConstr} |= pattern[0].kind == nnkIdent:
-        let
-            id = pattern[0]
-            i = kinds.findTag(id)
-            patterns = if pattern.len > 1: pattern[1..^1] else: @[]
-        assert i != -1
-        return  infix(infix(selector.newDotExpr(args.kind), "==", kinds[i]), "and", selector.matchTupleTy(nnkPar.newTree(patterns), kindFields[i].mapIt(it.strVal)))
-    of nnkIdent:
-        let
-            i = kinds.findTag(pattern)
-        if kindFields[i] != @[]:
-            error &"It has field(s)\nYou must use `{kinds[i].strVal}(subpatterns)`", pattern
-        return infix(selector.newDotExpr(args.kind), "==", kinds[i])
-    error "notimplemented"
-
-proc matchVariantObject(selector: NimNode, pattern: NimNode): NimNode =
-    let args = selector.getVariantPragma().get
-    case args.mode:
+        (kinds, kindFields, _) = objectInfo.fields
+    case objectInfo.mode
     of Wrapped:
-        return selector.matchVariantObjectWrapped(pattern, args)
-    of NonWrapped:
-        return selector.matchVariantObjectNonWrapped(pattern, args)
-    of NoCase:
-        error "notimplemented"
-    selector.matchDiscardingPattern(pattern, matchVariantObject(selector, pattern))
+        pattern.matchAst:
+        of {nnkCall, nnkObjConstr} |= pattern[0].kind == nnkIdent:
+            let
+                id = pattern[0]
+                i = kinds.findTag(id)
+                patterns = if pattern.len > 1: pattern[1..^1] else: @[]
+            if i == -1:
+                error "You can use one of " & $kinds.mapIt(it.strVal), pattern
+            if kindFields[i] == @[]:
+                error &"It has no fields\nYou can simply use the pattern `{kinds[i].strVal}`", pattern
+            return Call(bindSym"annotation", DotExpr(objectInfo.kindType, id)) and Infix("==", selector.newDotExpr(objectInfo.kind), kinds[i]) and Infix("?=", nnkPar.newTree(patterns), selector.newDotExpr(kindFields[i][0]))
+        of nnkIdent:
+            let
+                i = kinds.findTag(pattern)
+            if kindFields[i] != @[]:
+                error &"It has field(s)\nYou must use `{kinds[i].strVal}(subpatterns)`", pattern
+            return Call(bindSym"annotation", DotExpr(objectInfo.kindType, pattern)) and Infix("==", selector.newDotExpr(objectInfo.kind), kinds[i])
+        else:
+            discard
+    of NotWrapped:
+        pattern.matchAst:
+        of {nnkCall, nnkObjConstr} |= pattern[0].kind == nnkIdent:
+            let
+                id = pattern[0]
+                i = kinds.findTag(id)
+                patterns = if pattern.len > 1: pattern[1..^1] else: @[]
+            assert i != -1
+            return  Infix("==", selector.newDotExpr(objectInfo.kind), kinds[i]) and selector.matchTupleTy(nnkPar.newTree(patterns), kindFields[i].mapIt(it.strVal))
+        of nnkIdent:
+            let
+                i = kinds.findTag(pattern)
+            if kindFields[i] != @[]:
+                error &"It has field(s)\nYou must use `{kinds[i].strVal}(subpatterns)`", pattern
+            return Infix("==", selector.newDotExpr(objectInfo.kind), kinds[i])
+        else:
+            discard
+    of NoVariant:
+        pattern.matchAst:
+        of {nnkCall, nnkObjConstr} |= pattern[0].kind == nnkIdent:
+            let
+                id = pattern[0]
+                i = kinds.findTag(id)
+                patterns = if pattern.len > 1: pattern[1..^1] else: @[]
+            assert i != -1
+            return  Call(bindSym"annotation", id) and selector.matchTupleTy(nnkPar.newTree(patterns), kindFields[i].mapIt(it.strVal))
+        else:
+            discard
+    of NoCase, Incomplete:
+        error "notimplemented", pattern
     error "invalid pattern", pattern
 
 macro `?=`*(pattern: untyped, selector: object): untyped =
     proc impl(selector: NimNode, pattern: NimNode): NimNode =
-        if selector.hasVariantPragma:
-            return selector.matchVariantObject(pattern)
-        selector.matchDiscardingPattern(pattern, impl(selector, pattern))
-        let fields = toSeq(selector.getTypeImpl[2].children).filterIt(it.kind==nnkIdentDefs).mapIt(it[0].strVal)
-        selector.matchTupleTy(pattern, fields)
+        let
+            key = selector.getTypeHash
+            objectInfo = if objectContext.contains(key):
+                objectContext[key]
+            else:
+                let res = selector.objectInfoFromObject
+                objectContext[key] = res
+                res
+        return selector.matchVariantObject(pattern, objectInfo)
     selector.impl(pattern)
 
-macro match*(n: varargs[untyped]): untyped =
+proc newSpace(selector: NimNode, pattern: NimNode, used: seq[string] = @[]): Space =
+    var used = used
+    let typInst = selector.getTypeInst
+    let typ = selector.getTypeImpl
+    pattern.matchAst:
+    of nnkIdent:
+        if pattern.strVal in used:
+            return Space.Empty()
+        return Space.Ty(typInst)
+    of nnkIntLit:
+        return Space.Int(typ, Slice[BiggestInt](a: pattern.intVal, b: pattern.intVal))
+    of nnkFloatLit:
+        return Space.Float(typ, Slice[BiggestFloat](a: pattern.floatVal, b: pattern.floatVal))
+    of nnkPar:
+        typ.matchAst:
+        of nnkTupleConstr:
+            let args = toSeq(typ.children).zip(toSeq(pattern.children)).mapIt(
+                block:
+                    let res = it[0].newSpace(it[1], used)
+                    if it[1].kind == nnkIdent and it[1].strVal != "_" and it[1].strVal notin used:
+                        used.add it[1].strVal
+                    # TODO: id@pattern
+                    res
+            )
+            return Space.Constructor(typInst, "untaggedTuple", args)
+        of nnkObjectTy:
+            proc findPattern(self: NimNode, id: NimNode): NimNode =
+                for e in self:
+                    if e.kind == nnkIdent and e.eqIdent(id):
+                        return ident"_"
+                    if e.kind == nnkExprColonExpr and e[0].eqIdent(id):
+                        return e[1]
+            return Space.Constructor(
+                typInst,
+                "object",
+                typ[2].mapIt(
+                    block:
+                        let
+                            id = it[0]
+                            typ = it[1]
+                        typ.newSpace(pattern.findPattern(id))
+                )
+            )
+        else:
+            error "notimplemented", pattern
+    of nnkPrefix(ident"!", nnkIdent):
+        return Space.Empty()
+    else:
+        error "notimplemented", pattern
+
+proc checkExaustivity(selector: NimNode, patterns: seq[NimNode]): bool =
+    let
+        tySpace = Space.Ty(selector.getTypeInst)
+        coveredSpace = Space.Union(patterns.mapIt(selector.newSpace(it)))
+        uncoverdSpace = tySpace \ coveredSpace
+    echo tySpace
+    echo coveredSpace
+    echo uncoverdSpace
+    uncoverdSpace.isEmpty
+
+proc scanPattern(a: NimNode): NimNode =
+    a.matchAst:
+    # discarding the value
+    # _
+    of nnkOfBranch(nnkIdent(strVal = "_"), `body`@nnkStmtList):
+        result = ident"_"
+    of nnkOfBranch(nnkInfix(nnkIdent(strVal="and"), `p`@_,  `cond`@_), `body`@nnkStmtList):
+        result = p
+    # pattern mathing
+    of nnkOfBranch(`p`@_, `body`@nnkStmtList):
+        result = p
+    # else branch
+    of nnkElse(`body`@nnkStmtList):
+        result = ident"_"
+    else:
+        error "invalid branch", a
+    
+proc ifVerify(ifStmt: NimNode, selector: NimNode, body: seq[NimNode], orgSelector: NimNode): NimNode =
+    if ifStmt.len == 1 and ifStmt[0].kind == nnkElse:
+        let s = ifStmt[0][0]
+        # ifStmt[0] = nnkElifBranch.newTree(
+        #     newLit(true),
+        #     s
+        # )
+        return s
+    let tmp = toSeq(ifStmt.children).enumerate.filterIt(it[1].kind == nnkElse)
+    if tmp.len > 1 or tmp.len == 1 and tmp[0][0] != ifStmt.len - 1:
+        error "redundant pattern", body[tmp[0][0] + 1]
+    
+    let
+        patterns = body.map(scanPattern)
+    # if selector.checkExaustivity(patterns):
+    if false:
+        if ifStmt[^1].kind == nnkElse:
+            ifStmt
+        else:
+            let lastBranch = ifStmt[^1]
+            ifStmt[^1] = nnkElse.newTree(
+                lastBranch[1]
+            )
+            ifStmt
+    else:
+        # error "not exaustive", orgSelector
+        ifStmt.addElse(
+            # TODO: check wheathre patterns are exhaustive or not
+            nnkElse.newTree(newStmtList(
+                block:
+                    let
+                        err = bindSym"MatchError"
+                    quote do:
+                        raise newException(typeof `err`, "No match. (This behavior is adhoc(deprecated) implementation.)")
+            ))
+        )
+
+macro matchImpl*(selector: typed, orgSelector: typed, body: varargs[untyped]): untyped =
     func impl(selector: NimNode, body: NimNode): NimNode =
         body.matchAst:
         # discarding the value
@@ -720,57 +867,59 @@ macro match*(n: varargs[untyped]): untyped =
             )
         of nnkOfBranch(nnkInfix(nnkIdent(strVal="and"), `p`@_,  `cond`@_), `body`@nnkStmtList):
             result = nnkElifBranch.newTree(
-                infix(infix(`p`, "?=", selector), "and", cond),
+                Infix("and", Infix("?=", `p`, selector), cond),
                 body
             )
         # pattern mathing
         of nnkOfBranch(`p`@_, `body`@nnkStmtList):
             result = nnkElifBranch.newTree(
-                infix(`p`, "?=", selector),
+                Infix("?=", `p`, selector),
                 body
             )
         # else branch
-        of nnkElse(`body`@nnkStmtList):
+        of {nnkElse, nnkElseExpr}(`body`@nnkStmtList):
             hint "You can use wildcard `_` instead of `else` branch", body
             result = nnkElse.newTree(
                 body
             )
         else:
             error "invalid branch", body
-    func ifVerify(ifStmt: NimNode): NimNode =
-        if ifStmt.len == 1 and ifStmt[0].kind == nnkElse:
-            let s = ifStmt[0][0]
-            ifStmt[0] = nnkElifBranch.newTree(
-                newBoolLitNode(true),
-                s
-            )
-        ifStmt
-    let
-        selector = n[0]
-        body = n[1..^1]
-    newBlockStmt(
-        ident(":match"),
-        newStmtList(
-            newLetStmt(
-                ident":selector",
-                selector
-            ),
-            nnkIfStmt.newTree(
-                body.mapIt(
-                    ident":selector".impl(it)
-                )
-            ).addElse(
-                # TODO: check wheathre patterns are exhaustive or not
-                nnkElse.newTree(newStmtList(
-                    block:
-                        let
-                            err = bindSym"MatchError"
-                        quote do:
-                            raise newException(typeof `err`, "No match. (This behavior is adhoc implementation.)")
-                ))
-            ).ifVerify()
+    let body = toSeq(body)
+  
+    nnkIfStmt.newTree(
+        body.mapIt(
+            selector.impl(it)
         )
+    ).ifVerify(selector, body, orgSelector)
+
+macro match*(n: varargs[untyped]): untyped =
+    let
+        selector = nskLet.genSym(":selector")
+        body = n[1..^1]
+    newIfStmt(
+        (
+            cond: newLit(true),
+            body: newStmtList(
+                newLetStmt(selector, n[0]),
+                nnkCommand.newTree(bindSym"matchImpl", selector, n[0]).add(body)
+            )
+        )
+    ).addElse(
+        nnkElse.newTree(newStmtList(
+            block:
+                let err = bindSym"MatchError"
+                quote do:
+                    raise newException(typeof `err`, "unreachable")
+        ))
     )
+    # We cannot use break statement in Block statement.
+    # newBlockStmt(
+    #     ident":match",
+    #     newStmtList(
+    #         newLetStmt(selector, n[0]),
+    #         nnkCommand.newTree(bindSym"matchImpl", selector, n[0]).add(body)
+    #     )
+    # )
 
 template optAnd*{true and a}(a: bool): bool = a
 template optAnd*{a and true}(a: bool): bool = a
@@ -782,4 +931,3 @@ template otpOr*{false or a}(a: bool): bool = a
 template otpOr*{a or false}(a: bool): bool = a
 
 
-{.experimental: "caseStmtMacros".}
