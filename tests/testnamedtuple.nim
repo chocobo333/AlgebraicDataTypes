@@ -96,7 +96,7 @@ suite "named tuple":
             
     #     check (not flag)
 
-suite "Int(Exp)":
+suite "named tuple (Exp)":
     type IntTuple = tuple
         a: int
         b: int
