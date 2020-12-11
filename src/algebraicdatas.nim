@@ -838,6 +838,9 @@ proc newSpace(selector: NimNode, pattern: NimNode, used: var seq[string]): Space
         return selector.newSpaceTuple(pattern, used)
     of ntyObject:
         return selector.newSpaceObject(pattern, used)
+    of ntyString:
+        # TODO:
+        return Space.Empty()
     else:
         echo typ.typeKind
         echo typ.treeRepr
@@ -897,15 +900,23 @@ proc ifVerify(ifStmt: NimNode, selector: NimNode, body: seq[NimNode]): NimNode =
     let
         patterns = body.map(scanPattern)
     if selector.checkExaustivity(patterns):
-    # if false:
         if ifStmt[^1].kind == nnkElse:
             ifStmt
         else:
-            let lastBranch = ifStmt[^1]
-            ifStmt[^1] = nnkElse.newTree(
-                lastBranch[1]
-            )
-            ifStmt
+            if ifStmt.len == 1:
+                ifStmt.addElse(
+                    nnkElse.newTree(newStmtList((
+                        let err = bindSym"MatchError";
+                        quote do:
+                            raise newException(typeof `err`, "No match. (This behavior is adhoc(deprecated) implementation.)")
+                    )))
+                )
+            else:
+                let lastBranch = ifStmt[^1]
+                ifStmt[^1] = nnkElse.newTree(
+                    lastBranch[1]
+                )
+                ifStmt
     else:
         error "not exaustive", selector
         ifStmt.addElse(

@@ -63,15 +63,15 @@ suite "Pattern Matching":
             of _:
                 "not match"
         check d == "a[0] == c"
-    test "Tuple":
-        type Color = tuple
-            r: uint8
-            g: uint8
-            b: uint8
-            a: uint8
-        var
-            red: Color = (r: 255'u8, g: 1'u8, b: 2'u8, a: 3'u8)
-            a = case red
-            of (r: 255, g: _, b, a: _):
-                b
-        check a == red.b
+    # test "Tuple":
+    #     type Color = tuple
+    #         r: uint8
+    #         g: uint8
+    #         b: uint8
+    #         a: uint8
+    #     var
+    #         red: Color = (r: 255'u8, g: 1'u8, b: 2'u8, a: 3'u8)
+    #         a = case red
+    #         of (r: 255, g: _, b, a: _):
+    #             b
+    #     check a == red.b
