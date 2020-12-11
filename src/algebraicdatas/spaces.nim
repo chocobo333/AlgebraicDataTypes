@@ -61,12 +61,12 @@ func flatten(self: Space): Space =
         return
     result = self
     var i = 0
-    while i < self.sets.len:
-        if self.sets[i].isEmpty:
+    while i < result.sets.len:
+        if result.sets[i].isEmpty:
             result.sets.del(i)
             continue
-        if self.sets[i].kind == SpaceKind.Union:
-            result.sets.add self.sets[i].sets
+        if result.sets[i].kind == SpaceKind.Union:
+            result.sets.add result.sets[i].sets
             result.sets.del(i)
             continue
         inc i
