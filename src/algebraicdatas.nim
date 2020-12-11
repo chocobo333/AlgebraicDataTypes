@@ -820,8 +820,6 @@ proc newSpace(selector: NimNode, pattern: NimNode, used: var seq[string]): Space
         typ = selector.getTypeImpl
     pattern.matchAst:
     of nnkIdent:
-        echo used
-        echo pattern.strVal
         if pattern.strVal in used:
             return Space.Empty()
         if pattern.strVal != "_":
@@ -837,8 +835,7 @@ proc newSpace(selector: NimNode, pattern: NimNode, used: var seq[string]): Space
     of ntyFloat:
         return selector.newSpaceFloat(pattern, used)
     of ntyTuple:
-        result = selector.newSpaceTuple(pattern, used)
-        echo result
+        return selector.newSpaceTuple(pattern, used)
     of ntyObject:
         return selector.newSpaceObject(pattern, used)
     else:

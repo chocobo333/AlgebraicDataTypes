@@ -3,6 +3,7 @@ import strformat
 import strutils
 import sequtils
 import tables
+import sugar
 
 import macros
 import ast_pattern_matching
@@ -127,12 +128,18 @@ proc decompose*(self: Space): Space =
             let objectInfo = objectContext[self.typ.getSymHash]
             case objectInfo.mode:
             of Wrapped:
-                let a = objectInfo.fields
-                return Space.Union(
-                    a[0].zip(a[2]).mapIt(
-                        Space.Constructor(self.typ, it[0].strVal, Space.Ty(it[1][0]).decompose().args)
-                    )
-                )
+                let
+                    a = objectInfo.fields
+                    args = collect(newSeq):
+                        for e in a[0].zip(a[2]):
+                            if e[1].len == 1:
+                                Space.Constructor(self.typ, e[0].strVal, Space.Ty(e[1][0]).decompose().args)
+                            else:
+                                Space.Constructor(self.typ, e[0].strVal, @[])
+                return Space.Union(args)
+                    # a[0].zip(a[2]).mapIt(
+                    #     Space.Constructor(self.typ, it[0].strVal, Space.Ty(it[1][0]).decompose().args)
+                    # )
             of NoVariant:
                 let a = objectContext[self.typ.getSymHash].fields
                 return Space.Constructor(self.typ, a[0][0].strVal, a[2][0].mapIt(Space.Ty(it.getTypeInst)))
