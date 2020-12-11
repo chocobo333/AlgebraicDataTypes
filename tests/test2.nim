@@ -29,7 +29,7 @@ test "match for untagged tuple":
     let
         b = 2
         c = a.mapIt(
-            case it: # needs no block statement for case statement
+            case it # needs no block statement for case statement
             of (!b, !b): # reckoned as (2, 2)
                 b
             of (3, second):

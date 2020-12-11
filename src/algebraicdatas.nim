@@ -761,7 +761,7 @@ proc newSpaceTuple(selector: NimNode, pattern: NimNode, used: var seq[string]): 
             proc findPattern(self: NimNode, id: NimNode): NimNode =
                 for e in self:
                     if e.kind == nnkIdent and e.eqIdent(id):
-                        return ident"_"
+                        return e
                     if e.kind == nnkExprColonExpr and e[0].eqIdent(id):
                         return e[1]
                 error "unreachable", id
@@ -820,8 +820,12 @@ proc newSpace(selector: NimNode, pattern: NimNode, used: var seq[string]): Space
         typ = selector.getTypeImpl
     pattern.matchAst:
     of nnkIdent:
+        echo used
+        echo pattern.strVal
         if pattern.strVal in used:
             return Space.Empty()
+        if pattern.strVal != "_":
+            used.add pattern.strVal
         return Space.Ty(typInst)
     of nnkPrefix(ident"!", nnkIdent):
         return Space.Empty()
@@ -833,7 +837,8 @@ proc newSpace(selector: NimNode, pattern: NimNode, used: var seq[string]): Space
     of ntyFloat:
         return selector.newSpaceFloat(pattern, used)
     of ntyTuple:
-        return selector.newSpaceTuple(pattern, used)
+        result = selector.newSpaceTuple(pattern, used)
+        echo result
     of ntyObject:
         return selector.newSpaceObject(pattern, used)
     else:
