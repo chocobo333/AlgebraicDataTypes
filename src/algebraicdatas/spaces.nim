@@ -2,11 +2,15 @@
 import strformat
 import strutils
 import sequtils
+import tables
 
 import macros
 import ast_pattern_matching
 
-import rangesets
+import
+    utils,
+    rangesets,
+    contexts
 
 
 type
@@ -117,12 +121,26 @@ proc decompose*(self: Space): Space =
             raise newException(SpaceError, "notimplemented")
         of nnkTupleConstr:
             return Space.Constructor(self.typ, "untaggedTuple", self.typ.getTypeImpl.mapIt(Space.Ty(it.getTypeInst))) # it.newSpace(ident"_")
+        of nnkTupleTy:
+            return Space.Constructor(self.typ, "taggedTuple", self.typ.getTypeImpl.mapIt(Space.Ty(it[1].getTypeInst))) # it.newSpace(ident"_")
         of nnkObjectTy:
-            echo self
-            echo self.typ.treeRepr
-            raise newException(SpaceError, "notimplemented")
+            let objectInfo = objectContext[self.typ.getSymHash]
+            case objectInfo.mode:
+            of Wrapped:
+                let a = objectInfo.fields
+                return Space.Union(
+                    a[0].zip(a[2]).mapIt(
+                        Space.Constructor(self.typ, it[0].strVal, Space.Ty(it[1][0]).decompose().args)
+                    )
+                )
+            of NoVariant:
+                let a = objectContext[self.typ.getSymHash].fields
+                return Space.Constructor(self.typ, a[0][0].strVal, a[2][0].mapIt(Space.Ty(it.getTypeInst)))
+            else:
+                error "notimplemented", self.typ
         else:
             echo self
+            echo self.typ.getTypeImpl.treeRepr
             raise newException(SpaceError, "notimplemented")
     else:
         return self
@@ -165,7 +183,7 @@ proc `\`*(self, other: Space): Space =
         of SpaceKind.Ty:
             return self.decompose() \ other
         of SpaceKind.Constructor:
-            if self.typ.sameType(other.typ) and self.name == other.name:
+            if (self.typ.sameType(other.typ) or self.typ.getSymHash == other.typ.getSymHash) and self.name == other.name:
                 assert self.args.len == other.args.len
                 var args: seq[Space]
                 for i in 0..<self.args.len:
@@ -182,9 +200,8 @@ proc `\`*(self, other: Space): Space =
                     #         Space.Constructor(self.typ, self.name, args)
                     # )
                 )
-            echo self.typ.treeRepr
-            echo other.typ.treeRepr
-            raise newException(SpaceError, "notimplemented")
+            else:
+                return self
         else:
             echo self
             raise newException(SpaceError, "notimplemented")

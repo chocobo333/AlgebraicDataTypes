@@ -4,6 +4,7 @@ import strutils
 import sequtils
 import tables
 import options
+import sugar
 
 import macros
 import macroutils except Slice, Lit
@@ -42,8 +43,6 @@ func argize(n: int): NimNode =
     ident("arg" & $n)
 func newize(n: NimNode): NimNode =
     ident("new" & n.strVal)
-var
-    objectContext {.compileTime.}: ObjectContext = newContext()
 
 proc VariantImpl(typ: NimNode, kind: NimNode, getter: NimNode, children: NimNode): NimNode =
     echo 3
@@ -463,22 +462,6 @@ func getTypeSym*(n: NimNode): NimNode =
     else:
         error "notimplemented", n
 
-func getSymHash(n: NimNode): string =
-    n.matchAst:
-    of `t`@nnkSym:
-        result = t.signatureHash
-    of `t`@nnkBracketExpr:
-        result = t.mapIt(it.signatureHash).foldr(a & b)
-    else:
-        error "notimplemented", n
-func getTypeHash*(n: NimNode): string =
-    n.getTypeInst.matchAst:
-    of `t`@nnkSym:
-        result = t.signatureHash
-    of `t`@nnkBracketExpr:
-        result = t.mapIt(it.getSymHash).foldr(a & b)
-
-
 func getTypeImpl2*(n: NimNode): NimNode =
     result = n.getTypeInst
     result = if result.kind == nnkSym:
@@ -570,11 +553,16 @@ func getEnumFieldAndIntValue(enumSym: NimNode): seq[(NimNode, BiggestInt)] =
 
 func getFieldsFromRecList(reclist: NimNode): (seq[NimNode], seq[NimNode]) =
     reclist.expectKind(nnkRecList)
-    reclist.mapIt(
-        block:
-            it.expectKind(nnkIdentDefs)
+    reclist.mapIt((
+        case it.kind
+        of nnkIdentDefs:
             (it[0], it[1])
-    ).st2ts2
+        of nnkRecCase:
+            (it[0][0], it[0][1])
+        else:
+            error "unreachable", it
+            (newEmptyNode(), newEmptyNode())
+    )).st2ts2
 
 func getFieldsFromOfBranch(branch: NimNode): (BiggestInt, seq[NimNode], seq[NimNode]) =
     branch.expectKind({nnkOfBranch, nnkElse})
@@ -693,6 +681,8 @@ func matchVariantObject(selector: NimNode, pattern: NimNode, objectInfo: ObjectI
                 id = pattern[0]
                 i = kinds.findTag(id)
                 patterns = if pattern.len > 1: pattern[1..^1] else: @[]
+            if not id.eqIdent(selector.getTypeSym):
+                error "Bad identifier", id
             assert i != -1
             return  Call(bindSym"annotation", id) and selector.matchTupleTy(nnkPar.newTree(patterns), kindFields[i].mapIt(it.strVal))
         else:
@@ -703,30 +693,58 @@ func matchVariantObject(selector: NimNode, pattern: NimNode, objectInfo: ObjectI
 
 macro `?=`*(pattern: untyped, selector: object): untyped =
     proc impl(selector: NimNode, pattern: NimNode): NimNode =
-        let
-            key = selector.getTypeHash
-            objectInfo = if objectContext.contains(key):
-                objectContext[key]
-            else:
-                let res = selector.objectInfoFromObject
-                objectContext[key] = res
-                res
+        let objectInfo = selector.getObjectInfo
         return selector.matchVariantObject(pattern, objectInfo)
     selector.impl(pattern)
 
-proc newSpace(selector: NimNode, pattern: NimNode, used: seq[string] = @[]): Space =
-    var used = used
-    let typInst = selector.getTypeInst
-    let typ = selector.getTypeImpl
+proc newSpace(selector: NimNode, pattern: NimNode, used: var seq[string]): Space
+proc newSpaceInt(selector: NimNode, pattern: NimNode, used: var seq[string]): Space =
+    proc toInt(a: NimNode): BiggestInt =
+        a.matchAst:
+        of nnkIntLit:
+            return a.intVal
+        of nnkPrefix(ident"-", `a`@_):
+            return -a.toInt
+        of nnkDotExpr(ident"int", ident"high"):
+            return int.high
+        of nnkDotExpr(ident"int", ident"low"):
+            return int.low
+    let
+        typInst = selector.getTypeInst
+        typ = selector.getTypeImpl
     pattern.matchAst:
-    of nnkIdent:
-        if pattern.strVal in used:
-            return Space.Empty()
-        return Space.Ty(typInst)
     of nnkIntLit:
         return Space.Int(typ, Slice[BiggestInt](a: pattern.intVal, b: pattern.intVal))
-    of nnkFloatLit:
-        return Space.Float(typ, Slice[BiggestFloat](a: pattern.floatVal, b: pattern.floatVal))
+    of nnkInfix(ident"..", `a`@_, `b`@_):
+        return Space.Int(typ, Slice[BiggestInt](a: a.toInt, b: b.toInt))
+
+proc newSpaceFloat(selector: NimNode, pattern: NimNode, used: var seq[string]): Space =
+    proc toInt(a: NimNode): BiggestInt =
+        a.matchAst:
+        of nnkIntLit:
+            return a.intVal
+        of nnkPrefix(ident"-", `a`@_):
+            return -a.toInt
+        of nnkDotExpr(ident"int", ident"high"):
+            return int.high
+        of nnkDotExpr(ident"int", ident"low"):
+            return int.low
+    let
+        typInst = selector.getTypeInst
+        typ = selector.getTypeImpl
+    return Space.Empty()
+    # TODO: impl
+    # pattern.matchAst:
+    # of nnkFloatLit:
+    #     return Space.Float(typ, Slice[BiggestFloat](a: pattern.floatVal, b: pattern.floatVal))
+    # of nnkInfix(ident"..", `a`@_, `b`@_):
+    #     return Space.Float(typ, Slice[BiggestFloat](a: a.floatVal, b: b.floatVal))
+
+proc newSpaceTuple(selector: NimNode, pattern: NimNode, used: var seq[string]): Space =
+    let
+        typInst = selector.getTypeInst
+        typ = selector.getTypeImpl
+    pattern.matchAst:
     of nnkPar:
         typ.matchAst:
         of nnkTupleConstr:
@@ -739,47 +757,117 @@ proc newSpace(selector: NimNode, pattern: NimNode, used: seq[string] = @[]): Spa
                     res
             )
             return Space.Constructor(typInst, "untaggedTuple", args)
-        of nnkObjectTy:
+        of nnkTupleTy:
             proc findPattern(self: NimNode, id: NimNode): NimNode =
                 for e in self:
                     if e.kind == nnkIdent and e.eqIdent(id):
                         return ident"_"
                     if e.kind == nnkExprColonExpr and e[0].eqIdent(id):
                         return e[1]
+                error "unreachable", id
             return Space.Constructor(
                 typInst,
-                "object",
-                typ[2].mapIt(
-                    block:
-                        let
-                            id = it[0]
-                            typ = it[1]
-                        typ.newSpace(pattern.findPattern(id))
+                "taggedTuple",
+                typ.mapIt((
+                    let id = it[0];
+                    let typ = it[1];
+                    typ.newSpace(pattern.findPattern(id), used)
+                ))
+            )
+
+proc newSpaceObject(selector: NimNode, pattern: NimNode, used: var seq[string]): Space =
+    let
+        typInst = selector.getTypeInst
+        typ = selector.getTypeImpl
+        objectInfo = selector.getObjectInfo
+    pattern.matchAst:
+    of {nnkCall, nnkObjConstr}:
+        proc findPattern(self: NimNode, id: NimNode): NimNode =
+            for e in self[1..^1]:
+                if e.kind == nnkIdent and e.eqIdent(id):
+                    return ident"_"
+                if e.kind == nnkExprColonExpr and e[0].eqIdent(id):
+                    return e[1]
+            error "unreachable", id
+        let
+            id = pattern[0]
+            objectInfo = selector.getObjectInfo
+        case objectInfo.mode
+        of Wrapped:
+            let a = objectInfo[id.strVal]
+            return Space.Constructor(
+                typInst,
+                id.strVal,
+                a[1][0].newSpace(nnkPar.newTree(pattern[1..^1]), used).args
+            )
+        of NoVariant:
+            let a = objectInfo[id.strVal]
+            return Space.Constructor(
+                typInst,
+                id.strVal,
+                a[0].zip(a[1]).toSeq.mapIt((
+                    let id = it[0];
+                    let typ = it[1];
+                    typ.newSpace(pattern.findPattern(id), used))
                 )
             )
         else:
-            error "notimplemented", pattern
+            error "notimplemented", selector
+
+proc newSpace(selector: NimNode, pattern: NimNode, used: var seq[string]): Space =
+    let
+        typInst = selector.getTypeInst
+        typ = selector.getTypeImpl
+    pattern.matchAst:
+    of nnkIdent:
+        if pattern.strVal in used:
+            return Space.Empty()
+        return Space.Ty(typInst)
     of nnkPrefix(ident"!", nnkIdent):
         return Space.Empty()
     else:
+        discard
+    case typ.typeKind
+    of ntyInt:
+        return selector.newSpaceInt(pattern, used)
+    of ntyFloat:
+        return selector.newSpaceFloat(pattern, used)
+    of ntyTuple:
+        return selector.newSpaceTuple(pattern, used)
+    of ntyObject:
+        return selector.newSpaceObject(pattern, used)
+    else:
+        echo typ.typeKind
+        echo typ.treeRepr
+        echo typInst.treeRepr
+        echo pattern.treeRepr
         error "notimplemented", pattern
 
+proc newSpace(selector: NimNode, pattern: NimNode): Space = 
+    var used: seq[string]
+    selector.newSpace(pattern, used)
 proc checkExaustivity(selector: NimNode, patterns: seq[NimNode]): bool =
     let
         tySpace = Space.Ty(selector.getTypeInst)
-        coveredSpace = Space.Union(patterns.mapIt(selector.newSpace(it)))
-        uncoverdSpace = tySpace \ coveredSpace
-    echo tySpace
-    echo coveredSpace
-    echo uncoverdSpace
-    uncoverdSpace.isEmpty
+        coveredSpace = patterns.mapIt(selector.newSpace(it))
+    var
+        uncoveredSpace = tySpace
+        i = 0
+    for e in coveredSpace:
+        uncoveredSpace = uncoveredSpace \ e
+        inc i
+        if uncoveredSpace.isEmpty:
+            break
+    if i != patterns.len:
+        error "redundant pattern", patterns[i]
+    uncoveredSpace.isEmpty
 
 proc scanPattern(a: NimNode): NimNode =
     a.matchAst:
     # discarding the value
     # _
-    of nnkOfBranch(nnkIdent(strVal = "_"), `body`@nnkStmtList):
-        result = ident"_"
+    of nnkOfBranch(`p`@nnkIdent(strVal = "_"), `body`@nnkStmtList):
+        result = p
     of nnkOfBranch(nnkInfix(nnkIdent(strVal="and"), `p`@_,  `cond`@_), `body`@nnkStmtList):
         result = p
     # pattern mathing
@@ -788,10 +876,11 @@ proc scanPattern(a: NimNode): NimNode =
     # else branch
     of nnkElse(`body`@nnkStmtList):
         result = ident"_"
+        result.copyLineInfo(body)
     else:
         error "invalid branch", a
     
-proc ifVerify(ifStmt: NimNode, selector: NimNode, body: seq[NimNode], orgSelector: NimNode): NimNode =
+proc ifVerify(ifStmt: NimNode, selector: NimNode, body: seq[NimNode]): NimNode =
     if ifStmt.len == 1 and ifStmt[0].kind == nnkElse:
         let s = ifStmt[0][0]
         # ifStmt[0] = nnkElifBranch.newTree(
@@ -805,8 +894,8 @@ proc ifVerify(ifStmt: NimNode, selector: NimNode, body: seq[NimNode], orgSelecto
     
     let
         patterns = body.map(scanPattern)
-    # if selector.checkExaustivity(patterns):
-    if false:
+    if selector.checkExaustivity(patterns):
+    # if false:
         if ifStmt[^1].kind == nnkElse:
             ifStmt
         else:
@@ -816,7 +905,7 @@ proc ifVerify(ifStmt: NimNode, selector: NimNode, body: seq[NimNode], orgSelecto
             )
             ifStmt
     else:
-        # error "not exaustive", orgSelector
+        error "not exaustive", selector
         ifStmt.addElse(
             # TODO: check wheathre patterns are exhaustive or not
             nnkElse.newTree(newStmtList(
@@ -828,7 +917,7 @@ proc ifVerify(ifStmt: NimNode, selector: NimNode, body: seq[NimNode], orgSelecto
             ))
         )
 
-macro matchImpl*(selector: typed, orgSelector: typed, body: varargs[untyped]): untyped =
+macro matchImpl*(selector: typed, body: varargs[untyped]): untyped =
     func impl(selector: NimNode, body: NimNode): NimNode =
         body.matchAst:
         # discarding the value
@@ -862,18 +951,19 @@ macro matchImpl*(selector: typed, orgSelector: typed, body: varargs[untyped]): u
         body.mapIt(
             selector.impl(it)
         )
-    ).ifVerify(selector, body, orgSelector)
+    ).ifVerify(selector, body)
 
 macro match*(n: varargs[untyped]): untyped =
     let
         selector = nskLet.genSym(":selector")
         body = n[1..^1]
+    selector.copyLineInfo(n[0])
     newIfStmt(
         (
             cond: newLit(true),
             body: newStmtList(
                 newLetStmt(selector, n[0]),
-                nnkCommand.newTree(bindSym"matchImpl", selector, n[0]).add(body)
+                nnkCommand.newTree(bindSym"matchImpl", selector).add(body)
             )
         )
     ).addElse(

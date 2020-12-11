@@ -1,8 +1,12 @@
 
 import options
 import optionsutils
+import sequtils
 
 import macros
+import ast_pattern_matching
+
+import contexts
 
 func add*(father: NimNode, child: Option[NimNode]): NimNode =
     withSome child:
@@ -41,3 +45,32 @@ macro warning2*(msg: static[string], n: untyped): untyped =
 macro annotation*(a: enum): untyped = newLit(true)
 macro annotation*(a: type): untyped = newLit(true)
 macro annotation*(a: typed): untyped = newLit(true)
+
+func getSymHash*(n: NimNode): string =
+    n.matchAst:
+    of `t`@nnkSym:
+        result = t.signatureHash
+    of `t`@nnkBracketExpr:
+        result = t.mapIt(it.signatureHash).foldr(a & b)
+    else:
+        error "notimplemented", n
+        
+func getTypeHash*(n: NimNode): string =
+    n.getTypeInst.matchAst:
+    of `t`@nnkSym:
+        result = t.signatureHash
+    of `t`@nnkBracketExpr:
+        result = t.mapIt(it.getSymHash).foldr(a & b)
+    else:
+        error "notimplemented", n
+
+template getObjectInfo*(selector: typed): untyped = 
+    let
+        key = selector.getTypeHash
+        objectInfo = if objectContext.contains(key):
+            objectContext[key]
+        else:
+            let res = selector.objectInfoFromObject
+            objectContext[key] = res
+            res
+    objectInfo

@@ -22,7 +22,7 @@ func contains[T](self, other: Slice[T]): bool =
     other.a in self and other.b in self
 func `\=`[T](self: var RangeSet[T], other: Slice[T]) =
     var i = 0
-    while i < self.len and other.b > self[i].a:
+    while i < self.len and other.b >= self[i].a:
         if self[i].b < other.a:
             inc i
             continue
@@ -30,15 +30,27 @@ func `\=`[T](self: var RangeSet[T], other: Slice[T]) =
             self.delete(i)
             continue
         if other in self[i]:
+            if self[i].a == other.a:
+                self[i].a = other.b
+                inc self[i].a
+                return
+            if self[i].b == other.b:
+                self[i].b = other.a
+                dec self[i].b
+                return
             self.insert(Slice[T](a: other.b, b: self[i].b), i+1)
             self[i].b = other.a
+            dec self[i].b
+            inc self[i+1].a
             return
         if self[i].b in other:
             self[i].b = other.a
+            dec self[i].b
             inc i
             continue
         if self[i].a in other:
             self[i].a = other.b
+            inc self[i].a
             inc i
             continue
 
