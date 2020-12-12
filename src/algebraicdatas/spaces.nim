@@ -94,7 +94,7 @@ proc `$`*(self: Space): string =
     of SpaceKind.Empty:
         fmt"E()"
     of SpaceKind.Ty:
-        fmt"T({self.typ.treeRepr})"
+        fmt"T({self.typ.repr})"
     of SpaceKind.Constructor:
         fmt"K({self.name}; {self.args.join("", "")})"
     of SpaceKind.Int:
@@ -181,7 +181,7 @@ proc `\`*(self, other: Space): Space =
     of SpaceKind.Empty:
         return self
     of SpaceKind.Ty:
-        if self.typ == other.typ:
+        if self.typ.sameType(other.typ):
             return Space.Empty()
         else:
             return self

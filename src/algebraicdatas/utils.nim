@@ -51,7 +51,9 @@ func getSymHash*(n: NimNode): string =
     of `t`@nnkSym:
         result = t.signatureHash
     of `t`@nnkBracketExpr:
-        result = t.mapIt(it.signatureHash).foldr(a & b)
+        result = t.mapIt(it.getSymHash).foldr(a & b)
+    of `t`@nnkTupleConstr:
+        result = t.mapIt(it.getSymHash).foldr(a & b)
     else:
         error "notimplemented", n
         
@@ -60,6 +62,8 @@ func getTypeHash*(n: NimNode): string =
     of `t`@nnkSym:
         result = t.signatureHash
     of `t`@nnkBracketExpr:
+        result = t.mapIt(it.getSymHash).foldr(a & b)
+    of `t`@nnkTupleConstr:
         result = t.mapIt(it.getSymHash).foldr(a & b)
     else:
         error "notimplemented", n
@@ -74,3 +78,12 @@ template getObjectInfo*(selector: typed): untyped =
             objectContext[key] = res
             res
     objectInfo
+
+func idOrSym*(n: NimNode): NimNode =
+    n.matchAst:
+    of {nnkIdent, nnkSym}:
+        return n
+    of {nnkOpenSymChoice}:
+        return n[0]
+    else:
+        error "notimplemented", n

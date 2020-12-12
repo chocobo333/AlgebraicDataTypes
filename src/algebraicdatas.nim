@@ -348,7 +348,7 @@ template matchDiscardingPattern(selector: NimNode, pattern: NimNode, inductive: 
     else:
         discard
 
-macro `?=`*(pattern: untyped, selector: AtomType|string): untyped =
+macro `?=`*(pattern: untyped, selector: AtomType|string): untyped {.discardable.} =
     func impl(selector: NimNode, pattern: NimNode): NimNode =
         selector.matchDiscardingPattern(pattern, impl(selector, pattern))
         pattern.matchAst:
@@ -438,7 +438,7 @@ func matchTupleTy(selector: NimNode, pattern: NimNode, tupleFields: seq[string])
     else:
         error "invalid pattern", pattern
 
-macro `?=`*(pattern: untyped, selector: tuple): untyped =
+macro `?=`*(pattern: untyped, selector: tuple): untyped {.discardable.} =
     proc impl(selector: NimNode, pattern: NimNode): NimNode =
         let (tupleKind, tupleLen, tupleFields) = scanTupleInfo(selector)
         case tupleKind:
@@ -632,16 +632,16 @@ func objectInfoFromObject(selector: NimNode): ObjectInfo =
     else:
         ObjectInfo(mode: NoVariant, fields: selector.getRecListFields)
 
-func matchVariantObject(selector: NimNode, pattern: NimNode, objectInfo: ObjectInfo): NimNode =
+proc matchVariantObject(selector: NimNode, pattern: NimNode, objectInfo: ObjectInfo): NimNode =
     selector.matchDiscardingPattern(pattern, matchVariantObject(selector, pattern, objectInfo))
     let
         (kinds, kindFields, _) = objectInfo.fields
     case objectInfo.mode
     of Wrapped:
         pattern.matchAst:
-        of {nnkCall, nnkObjConstr} |= pattern[0].kind == nnkIdent:
+        of {nnkCall, nnkObjConstr} |= pattern[0].kind in {nnkIdent, nnkSym, nnkOpenSymChoice}:
             let
-                id = pattern[0]
+                id = pattern[0].idOrSym
                 i = kinds.findTag(id)
                 patterns = if pattern.len > 1: pattern[1..^1] else: @[]
             if i == -1:
@@ -656,7 +656,8 @@ func matchVariantObject(selector: NimNode, pattern: NimNode, objectInfo: ObjectI
                 error &"It has field(s)\nYou must use `{kinds[i].strVal}(subpatterns)`", pattern
             return Call(bindSym"annotation", DotExpr(objectInfo.kindType, pattern)) and Infix("==", selector.newDotExpr(objectInfo.kind), kinds[i])
         else:
-            discard
+            echo pattern.treeRepr
+            error "invalid pattern", pattern
     of NotWrapped:
         pattern.matchAst:
         of {nnkCall, nnkObjConstr} |= pattern[0].kind == nnkIdent:
@@ -673,7 +674,7 @@ func matchVariantObject(selector: NimNode, pattern: NimNode, objectInfo: ObjectI
                 error &"It has field(s)\nYou must use `{kinds[i].strVal}(subpatterns)`", pattern
             return Infix("==", selector.newDotExpr(objectInfo.kind), kinds[i])
         else:
-            discard
+            error "invalid pattern", pattern
     of NoVariant:
         pattern.matchAst:
         of {nnkCall, nnkObjConstr} |= pattern[0].kind == nnkIdent:
@@ -689,9 +690,8 @@ func matchVariantObject(selector: NimNode, pattern: NimNode, objectInfo: ObjectI
             discard
     of NoCase, Incomplete:
         error "notimplemented", pattern
-    error "invalid pattern", pattern
 
-macro `?=`*(pattern: untyped, selector: object): untyped =
+macro `?=`*(pattern: untyped, selector: object): untyped {.discardable.} =
     proc impl(selector: NimNode, pattern: NimNode): NimNode =
         let objectInfo = selector.getObjectInfo
         return selector.matchVariantObject(pattern, objectInfo)
@@ -790,11 +790,12 @@ proc newSpaceObject(selector: NimNode, pattern: NimNode, used: var seq[string]):
                     return e[1]
             error "unreachable", id
         let
-            id = pattern[0]
+            id = pattern[0].idOrSym
             objectInfo = selector.getObjectInfo
         case objectInfo.mode
         of Wrapped:
-            let a = objectInfo[id.strVal]
+            let
+                a = objectInfo[id.strVal]
             return Space.Constructor(
                 typInst,
                 id.strVal,
@@ -914,7 +915,10 @@ proc ifVerify(ifStmt: NimNode, selector: NimNode, body: seq[NimNode]): NimNode =
             else:
                 let lastBranch = ifStmt[^1]
                 ifStmt[^1] = nnkElse.newTree(
-                    lastBranch[1]
+                    newStmtList(
+                        DiscardStmt(lastBranch[0]),
+                        lastBranch[1]
+                    )
                 )
                 ifStmt
     else:
@@ -930,7 +934,7 @@ proc ifVerify(ifStmt: NimNode, selector: NimNode, body: seq[NimNode]): NimNode =
             ))
         )
 
-macro matchImpl*(selector: typed, body: varargs[untyped]): untyped =
+macro matchImpl(selector: typed, body: varargs[untyped]): untyped =
     func impl(selector: NimNode, body: NimNode): NimNode =
         body.matchAst:
         # discarding the value
@@ -1008,3 +1012,26 @@ template otpOr*{a or false}(a: bool): bool = a
 
 {.experimental: "caseStmtMacros".}
 
+
+# Variant Option[T], kind:
+# of Some:
+#     val: T
+# of None:
+#     nil
+
+# Algebraic Result[T, E]:
+#     Ok(T)
+#     Err(T)
+
+# type
+#     InvalidUnwrapError = object of ValueError
+
+# func unwrap[T, E](self: Result[T, E], msg: string = ""): T =
+#     match self:
+#     of Ok(x):
+#         return x
+#     of Err(_):
+#         raise newException(InvalidUnwrapError, msg)
+
+# var a = Result[int, string].Ok(3)
+# echo a.unwrap()
