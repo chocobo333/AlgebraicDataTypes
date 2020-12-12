@@ -820,7 +820,8 @@ proc newSpace(selector: NimNode, pattern: NimNode, used: var seq[string]): Space
         typInst = selector.getTypeInst
         typ = selector.getTypeImpl
     pattern.matchAst:
-    of nnkIdent:
+    of {nnkIdent, nnkSym, nnkOpenSymChoice}:
+        let pattern = pattern.idOrSym
         if pattern.strVal in used:
             return Space.Empty()
         if pattern.strVal != "_":
