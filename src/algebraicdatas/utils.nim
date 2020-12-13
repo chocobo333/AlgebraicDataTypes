@@ -55,7 +55,7 @@ func getSymHash*(n: NimNode): string =
     of `t`@nnkTupleConstr:
         result = t.mapIt(it.getSymHash).foldr(a & b)
     else:
-        error "notimplemented", n
+        result = n.treeRepr
         
 func getTypeHash*(n: NimNode): string =
     n.getTypeInst.matchAst:
@@ -66,7 +66,7 @@ func getTypeHash*(n: NimNode): string =
     of `t`@nnkTupleConstr:
         result = t.mapIt(it.getSymHash).foldr(a & b)
     else:
-        error "notimplemented", n
+        result = n.treeRepr
 
 template getObjectInfo*(selector: typed): untyped = 
     let
