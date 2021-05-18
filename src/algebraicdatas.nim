@@ -123,7 +123,7 @@ func generalize(id: NimNode, generics: NimNode): NimNode =
         )
     )
 
-func makeType(name: NimNode, generics: NimNode, fields: seq[NimNode], kinds: seq[(NimNode, VariantKind, seq[NimNode])]): NimNode =
+func makeType(name: NimNode, generics: NimNode, fields: seq[NimNode], kinds: seq[(NimNode, VariantKind, seq[NimNode])], refer: bool = false): NimNode =
     name.expectKind(nnkIdent)
     result = nnkTypeSection.newNimNode()
     let
@@ -147,15 +147,7 @@ func makeType(name: NimNode, generics: NimNode, fields: seq[NimNode], kinds: seq
                     newEmptyNode()
             )
         )
-        variant = nnkTypeDef.newTree(
-            nnkPragmaExpr.newTree(
-                postfix(name, "*"),
-                nnkPragma.newTree(
-                    bindSym"variant",
-                )
-            ),
-            generics,
-            nnkObjectTy.newTree(
+        typ = nnkObjectTy.newTree(
                 newEmptyNode(),
                 newEmptyNode(),
                 nnkRecList.newTree(fields.mapIt(newIdentDefs(postfix(it[0], "*"), it[1]))).add(
@@ -178,6 +170,18 @@ func makeType(name: NimNode, generics: NimNode, fields: seq[NimNode], kinds: seq
                     )
                 )
             )
+        variant = nnkTypeDef.newTree(
+            nnkPragmaExpr.newTree(
+                postfix(name, "*"),
+                nnkPragma.newTree(
+                    bindSym"variant",
+                )
+            ),
+            generics,
+            if refer:
+                nnkRefTy.newTree(typ)
+            else:
+                typ
         )
     result.add kind
     result.add impls
@@ -291,6 +295,13 @@ macro Algebraic*(name: untyped, body: untyped): untyped =
         (fields, kinds) = scanFields(body)
     result = newStmtList()
     result.add makeType(name, generics, fields, kinds)
+    result.add makeConstructor(name, generics, fields, kinds)
+macro AlgebraicRef*(name: untyped, body: untyped): untyped =
+    var
+        (name, generics) = scanName(name)
+        (fields, kinds) = scanFields(body)
+    result = newStmtList()
+    result.add makeType(name, generics, fields, kinds, refer = true)
     result.add makeConstructor(name, generics, fields, kinds)
 
 template `==?`(a, b: untyped): untyped =
