@@ -534,6 +534,9 @@ func hasVariantPragma*(n: NimNode): bool =
         of nnkTypeDef(nnkPragmaExpr(nnkSym, `pragma`@nnkPragma), nnkGenericParams, nnkRefTy(`n`@nnkBracketExpr)):
             searchPragma(pragma, variant)
             tmp = n[0].getImpl
+        of nnkTypeDef(nnkPragmaExpr(nnkSym, `pragma`@nnkPragma), nnkGenericParams, nnkRefTy({nnkObjectTy})):
+            searchPragma(pragma, variant)
+            return false
         of nnkTypeDef(nnkPragmaExpr(nnkSym, `pragma`@nnkPragma), {nnkEmpty, nnkGenericParams}, {nnkObjectTy}):
             searchPragma(pragma, variant)
             return false
@@ -587,9 +590,14 @@ func getFieldsFromOfBranch(branch: NimNode): (BiggestInt, seq[NimNode], seq[NimN
     else:
         error "unreachable", branch
 
+proc getRecList(selector: NimNode): NimNode =
+    let
+        tmp = selector.getTypeImpl
+    result = if tmp.kind == nnkRefTy: tmp[0].getTypeImpl[2] else: tmp[2]
+    result.expectKind nnkRecList
 proc getRecListFields(selector: NimNode): (seq[NimNode], seq[seq[NimNode]], seq[seq[NimNode]]) =
     let
-        reclist = selector.getTypeImpl[2]
+        reclist = selector.getRecList
         typ = selector.getTypeSym
         tmp = reclist.getFieldsFromRecList
     (@[typ], @[tmp[0]], @[tmp[1]])
@@ -600,7 +608,7 @@ proc getRecCaseFields(selector: NimNode, kind: NimNode): (seq[NimNode], seq[seq[
             it.getFieldsFromOfBranch()
         )
     let
-        reclist = selector.getTypeImpl[2]
+        reclist = selector.getRecList
     for e in reclist:
         if e.kind == nnkRecCase:
             e[0].matchAst:
@@ -619,9 +627,9 @@ proc getRecCaseFields(selector: NimNode, kind: NimNode): (seq[NimNode], seq[seq[
             else:
                 error "unreachable", e[0]
 
-func getKindType*(selector: NimNode, kind: NimNode): NimNode =
+proc getKindType*(selector: NimNode, kind: NimNode): NimNode =
     let
-        reclist = selector.getTypeImpl[2]
+        reclist = selector.getRecList
     for e in reclist:
         if e.kind == nnkRecCase:
             e[0].matchAst:
@@ -637,7 +645,7 @@ func findTag(kinds: seq[NimNode], pattern: NimNode): int =
         let tmp = kinds[0..^2].mapIt(it.strVal).join(", ") & &" or {kinds[^1].strVal}"
         error "invalid discriminator\nYou can use " & tmp, pattern
 
-func objectInfoFromObject(selector: NimNode): ObjectInfo =
+proc objectInfoFromObject(selector: NimNode): ObjectInfo =
     if selector.hasVariantPragma:
         ObjectInfo(kind: defaultDiscriminator(), kindType: selector.getKindType(defaultDiscriminator()), mode: Wrapped, fields: selector.getRecCaseFields(defaultDiscriminator()))
     else:
@@ -707,6 +715,8 @@ macro `?=`*(pattern: untyped, selector: object): untyped {.discardable.} =
         let objectInfo = selector.getObjectInfo
         return selector.matchVariantObject(pattern, objectInfo)
     selector.impl(pattern)
+macro `?=`*(pattern: untyped, selector: ref object): untyped {.discardable.} =
+    return Infix("?=", pattern, nnkBracketExpr.newTree(selector))
 
 proc newSpace(selector: NimNode, pattern: NimNode, used: var seq[string]): Space
 proc newSpaceInt(selector: NimNode, pattern: NimNode, used: var seq[string]): Space =
@@ -825,6 +835,45 @@ proc newSpaceObject(selector: NimNode, pattern: NimNode, used: var seq[string]):
             )
         else:
             error "notimplemented", selector
+proc newSpaceRefObject(selector: NimNode, pattern: NimNode, used: var seq[string]): Space =
+    let
+        typInst = selector.getTypeInst
+        typ = selector.getTypeImpl
+    pattern.matchAst:
+    of {nnkCall, nnkObjConstr}:
+        proc findPattern(self: NimNode, id: NimNode): NimNode =
+            for e in self[1..^1]:
+                if e.kind == nnkIdent and e.eqIdent(id):
+                    return ident"_"
+                if e.kind == nnkExprColonExpr and e[0].eqIdent(id):
+                    return e[1]
+            error "unreachable", id
+        let
+            id = pattern[0].idOrSym
+            objectInfo = selector.getObjectInfo
+        case objectInfo.mode
+        of Wrapped:
+            let
+                a = objectInfo[id.strVal]
+            echo objectInfo
+            return Space.Constructor(
+                typInst,
+                id.strVal,
+                a[1][0].newSpace(nnkPar.newTree(pattern[1..^1]), used).args
+            )
+        of NoVariant:
+            let a = objectInfo[id.strVal]
+            return Space.Constructor(
+                typInst,
+                id.strVal,
+                a[0].zip(a[1]).toSeq.mapIt((
+                    let id = it[0];
+                    let typ = it[1];
+                    typ.newSpace(pattern.findPattern(id), used))
+                )
+            )
+        else:
+            error "notimplemented", selector
 
 proc newSpace(selector: NimNode, pattern: NimNode, used: var seq[string]): Space =
     let
@@ -854,6 +903,9 @@ proc newSpace(selector: NimNode, pattern: NimNode, used: var seq[string]): Space
     of ntyString:
         # TODO:
         return Space.Empty()
+    of ntyRef:
+        # return selector.newSpaceRefObject(pattern, used)
+        error "notimplemented", pattern
     else:
         echo typ.typeKind
         echo typ.treeRepr
