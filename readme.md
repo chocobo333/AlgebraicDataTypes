@@ -212,6 +212,7 @@ of (0: a1, 1: a2, 2: a3, 3: a4):
 ### Object
 The same goes for the tuple pattern
 #### Nil pattern
+##### not implemented yet
 You can use Nil pattern `nil` with nillable object, namely `ref object` or `ptr object`.
 ```nim
 var
