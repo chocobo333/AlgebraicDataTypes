@@ -18,7 +18,7 @@ proc `$`*[T](self: Tree[T]): string =
         $n
     of Node(a, b):
         "Node(" & $a & ", " & $b & ")"
-    match self:
+    match self[]:
     of Val(n):
         $n
     of Node(a, b):
