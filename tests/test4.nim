@@ -13,16 +13,24 @@ AlgebraicRef Tree[T]:
     Node(a: Tree[T], b: Tree[T])
 
 proc `$`*[T](self: Tree[T]): string =
-    discard match self[]:
-    of Val(n):
-        $n
-    of Node(a, b):
-        "Node(" & $a & ", " & $b & ")"
-    match self[]:
-    of Val(n):
-        $n
-    of Node(a, b):
-        "Node(" & $a & ", " & $b & ")"
+    # match self:
+    # of nil:
+    #     "nil"
+    # else:
+    #     match self[]:
+    #     of Val(n):
+    #         $n
+    #     of Node(a, b):
+    #         "Node(" & $a & ", " & $b & ")"
+    if self.isNil:
+        "nil"
+    else:
+        match self[]:
+        of Val(n):
+            $n
+        of Node(a, b):
+            "Node(" & $a & ", " & $b & ")"
+
 
 test "variant":
     check declared(Tree)

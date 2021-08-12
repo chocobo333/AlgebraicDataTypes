@@ -4,12 +4,12 @@ import strutils
 import sequtils
 import tables
 import options
-import sugar
+# import sugar
 
 import macros
 import macroutils except Slice, Lit
 import ast_pattern_matching
-import hmisc/hexceptions
+# import hmisc/hexceptions
 
 import algebraicdatas/[
     utils,
